@@ -58,11 +58,11 @@ air-traffic-simulation/
    ```
 
 2. **Prepare input data:**
-   - Download historical ADS-B data from [ADS-B Exchange](https://www.adsbexchange.com) as `.mat`.
-   - Place data in the `data/` directory.
+   - Download historical ADS-B data from [ADS-B Exchange](https://www.adsbexchange.com) as `.mat` using loadHistorical function.
+   - Or use live API with API_request function.
 
 3. **Run the simulation in MATLAB:**
-   - Open `src/main.m` or `src/controller_test.m`.
+   - Open `src/simulation.m` or `src/script_one_iteration.m`.
    - Execute the script in MATLAB.
 
 ---
