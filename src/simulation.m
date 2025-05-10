@@ -1,0 +1,66 @@
+clear;
+clc;
+sep_min_infringements = [];
+ATC_instructions = [];
+AC_in_sector = [];
+time = [];
+
+t = 20;
+[lat, lon, d, bordershp, areashp] = areaCalc('HU', t);
+
+%% Prepare data
+% Get arcived data point
+S = historicalLoad(5000);
+% Process data to traffic simulation's own format
+D = stateProcess(S.aircraft);
+% Filter for area
+D = getInside(D, areashp);
+D = D([D(:).inside] == 1);
+% Filter for above FL030
+D = D([D(:).flightlevel] > 30);
+
+%% Traffic Simulation
+D = getInside(D, bordershp);
+% Filter for aircraft inside the area
+D2 = D([D(:).inside] == 1);
+
+%%
+for i = 5001 : 235955
+    %% Control
+    C1 = generateRequests(D2);
+    C = controllerActions(C1);
+    ATC_instructions(end+1) = ATC_instructions_number(C);
+    length(C)
+    AC_in_sector(end+1) = length(C);
+    D = controlStates(D, C);
+
+    D_inside = D([D(:).inside] == 1);
+    D_inside = estimatePos(D_inside, 5/60); % 5 seconds in minutes, induced by the resution of histroical data
+    D_inside = shiftPos(D_inside);
+    D_outside = D([D(:).inside] == 0);
+    D_outside = estimatePos(D_outside, 5/60); % only so that the structures have the same fields
+    D = [D_inside; D_outside]; % inside traffic is updated w/ algorithm, outside traffic is kept
+    n = separationMinima(D([D(:).inside] == 1))
+    sep_min_infringements(end+1) = n;
+    
+    %% Update positions outside the area
+    S = historicalLoad(i);
+    try
+        time(end+1) = datetime(S.now, 'ConvertFrom', 'posixtime');
+    catch
+    end
+    D_all_updated = stateProcess(S.aircraft);
+    % Filter for area
+    D_all_updated = getInside(D_all_updated, areashp);
+    D_all_updated = D_all_updated([D_all_updated(:).inside] == 1);
+    D_all_updated = getInside(D_all_updated, bordershp);
+    D = updatePos(D, D_all_updated); 
+    D = getInside(D, bordershp);
+    % Filter for above FL030
+    D = D([D(:).flightlevel] > 30);
+    D2 = D([D(:).inside] == 1);
+    D = estimatePos(D, 1);
+    v = stateMapping_simple(D, 0);
+    hold off
+
+end
