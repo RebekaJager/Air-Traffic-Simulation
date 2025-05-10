@@ -44,6 +44,7 @@ This MATLAB-based simulation framework is an open-source, modular toolkit for te
 air-traffic-simulation/
 ├── data/             # ADS-B data (.mat, .geojson)
 ├── src/              # MATLAB scripts and core functions
+├── results/          # (optional) output visualizations and KPIs
 └── README.md
 ```
 
