@@ -60,10 +60,10 @@ for i = 1 : n
     elseif isfield(S{i, 1}, 'true_heading')
         hdg(i) = S{i, 1}.true_heading;
     end
-    if isfield(S{i, 1}, 'baro_rate') % ezzel még foglalkozni
-        vrr(i) = S{i, 1}.baro_rate;
+    if isfield(S{i, 1}, 'baro_rate') % converted ft/min to m/s
+        vrr(i) = S{i, 1}.baro_rate * 0.00508;
     elseif isfield(S{i, 1}, 'geom_rate')
-        vrr(i) = S{i, 1}.geom_rate;
+        vrr(i) = S{i, 1}.geom_rate * 0.00508;
     else
         vrr(i) = 0;
     end
