@@ -41,7 +41,7 @@ for i = 1 : n
         if isempty(S{i,1}{8})
             alt(i) = 0;
         else
-            alt(i) = S{i,1}{8};
+            alt(i) = S{i,1}{8} * 3.2808399; % meter to ft
         end
         if isempty(S{i,1}{10})
             vel(i) = 0;
@@ -56,10 +56,10 @@ for i = 1 : n
         if isempty(S{i,1}{12})
             vrr(i) = 0;
         else
-            vrr(i) = S{i,1}{12};
+            vrr(i) = S{i,1}{12} * 196.8503937;
         end
         
-        FL(i) = ((alt(i)*3.2808399)/100);
+        FL(i) = ((alt(i))/100);
     end
 end
 
