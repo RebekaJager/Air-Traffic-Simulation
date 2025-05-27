@@ -27,17 +27,18 @@ D2 = D([D(:).inside] == 1);
 v = stateMapping_simple(D2, 1);
 
 %% Control
-C1 = generateRequests(D2); % kérés típus mező kérdése
-C = controllerActions(C1); % A simple controller algorithm LEÍRÁST BEFEJEZNI, ALTERNATÍV HASZNÁLATI MÓDOK
+C1 = generateRequests(D2); 
+C = controllerActions(C1); % A simple controller algorithm
 D = controlStates(D, C);
-D = estimatePos(D, 0.5); % Account for time during ATC instruction exchange and perfrmance
+D = estimatePos(D, 0.5); % Account for time during ATC instruction exchange and performance
 D = shiftPos(D);
 
 %% Update positions outside the area
 S = API_request(1, lat, lon, 250);
 D2 = stateProcess(S.aircraft);
 D = getInside(D, bordershp);
-D = updatePos(D, D2); % EHHEZ HELPET
+D2 = getInside(D2, bordershp);
+D = updatePos(D, D2);
 D = getInside(D, bordershp);
 %%
 n = separationMinima(D([D(:).inside] == 1));
