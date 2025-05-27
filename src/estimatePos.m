@@ -47,10 +47,9 @@ end
 
 % Verical shift - change atitude based on verical rate
 for i = 1 : n
-    if D(i).vertical_rate < 0
-        D(i).flightlevel_mov = D(i).flightlevel - 20;
-    elseif D(i).vertical_rate > 0
-        D(i).flightlevel_mov = D(i).flightlevel + 20;
+    if D(i).vertical_rate ~= 0
+        D(i).altitude_mov = D(i).altitude + D(i).vertical_rate * t;
+        D(i).flightlevel_mov = floor( floor(D(i).altitude_mov / 100) / 10) * 10;
     else
         D(i).flightlevel_mov = D(i).flightlevel;
     end
