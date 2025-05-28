@@ -5,7 +5,7 @@ This MATLAB-based simulation framework is an open-source, modular toolkit for te
 
 ---
 
-## 🧠 Key Features
+## ⚙️ Key Features
 
 - **Two-layer architecture**:
   - *Simulation Layer*: loads, predicts, and simulates traffic data.
