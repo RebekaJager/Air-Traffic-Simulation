@@ -42,6 +42,10 @@ for i = 1 : length(C) % accept all pilot requests
         C(i).ATC_approval = 1;
         C(i).velocity_atc = C(i).velocity_req;
     end
+    if isfield(C, 'vertical_rate_req') && isempty(C(i).velocity_req) == 0
+        C(i).ATC_approval = 1;
+        C(i).vertical_rate_atc = C(i).vertical_rate_req;
+    end
 end
 
 for t = 0 : 10/60 : look_ahead_time
