@@ -3,8 +3,9 @@ clc;
 sep_min_infringements = [];
 ATC_instructions = [];
 AC_in_sector = [];
-time = [];
 
+time = [];
+CMs = struct();
 t = 20;
 [lat, lon, d, bordershp, areashp] = areaCalc('HU', t);
 
@@ -25,10 +26,13 @@ D = getInside(D, bordershp);
 D2 = D([D(:).inside] == 1);
 
 %%
-for i = 5001 : 235955
+for i = 5001 : 12000 %235955
     %% Control
     C1 = generateRequests(D2);
-    C = controllerActions(C1);
+    %C = controllerActions(C1);
+    CM = conflictDetect(C1, 3);
+    CMs(i-5000).conflicts = CM;
+    C = conflictSolve(CM, C1);
     ATC_instructions(end+1) = ATC_instructions_number(C);
     length(C)
     AC_in_sector(end+1) = length(C);
@@ -60,7 +64,7 @@ for i = 5001 : 235955
     D = D([D(:).flightlevel] > 30);
     D2 = D([D(:).inside] == 1);
     D = estimatePos(D, 1);
-    v = stateMapping_simple(D, 0);
+    %v = stateMapping_simple(D, 0);
     hold off
 
 end
