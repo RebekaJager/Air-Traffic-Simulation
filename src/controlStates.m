@@ -48,7 +48,12 @@ if isfield(C, 'velocity_atc')
 else
     implementing_idx_vel = zeros(1, length(C));
 end
-implementing_idx = implementing_idx_hd | implementing_idx_fl | implementing_idx_vel;
+if isfield(C, 'vertical_rate_atc')
+    implementing_idx_vs = ~cellfun(@isempty, {C(:).vertical_rate_atc});
+else
+    implementing_idx_vs = zeros(1, length(C));
+end
+implementing_idx = implementing_idx_hd | implementing_idx_fl | implementing_idx_vel | implementing_idx_vs;
 implementing_nr = sum(implementing_idx);
 human_error_nr = round(implementing_nr*(pilot_error_rate / 100));
 
@@ -75,6 +80,13 @@ for i = 1 : length(idx_to_change)
             C(i).velocity = C(i).velocity_atc * (1 + (wrongness / 100) * (2 * rand - 1));
         else
             C(i).velocity = C(i).velocity_atc;
+        end
+    end
+    if isfield(C, 'vertical_rate_atc') && isempty(C(i).vretical_rate_atc) == 0
+        if ismember(idx_to_change(i), idx_to_change_w_error)
+            C(i).vertical_rate = C(i).vertical_rate_atc * (1 + (wrongness / 100) * (2 * rand - 1));
+        else
+            C(i).vertical_rate = C(i).vertical_rate_atc;
         end
     end
 end
