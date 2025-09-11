@@ -27,10 +27,12 @@ D2 = D([D(:).inside] == 1);
 v = stateMapping_simple(D2, 1);
 
 %% Control
-C1 = generateRequests(D2); 
-C = controllerActions(C1); % A simple controller algorithm
+C1 = generateRequests(D2); % kérés típus mező kérdése
+%C = controllerActions(C1); % A simple controller algorithm
+CM = conflictDetect(C1, 5);
+C = conflictSolve(CM, C1);
 D = controlStates(D, C);
-D = estimatePos(D, 0.5); % Account for time during ATC instruction exchange and performance
+D = estimatePos(D, 0.5); % Account for time during ATC instruction exchange and perfrmance
 D = shiftPos(D);
 
 %% Update positions outside the area
