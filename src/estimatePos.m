@@ -1,57 +1,31 @@
-function [D] = estimatePos(D, t)
-
-% ESTIIMATEPOS - Return the predicted future position of aircraft.
+function D = estimatePos(D, t)
+% ESTIMATEPOS - Return the predicted future position of aircraft.
 %
-%   Sytax
-%       [D] = ESTIMATEPOS(D, t)
+%   Syntax
+%       D = ESTIMATEPOS(D, t)
 %
 %   Input Arguments
-%      * D as structure, structure of traffic data
-%      * t as double, estimation timeframe [min]
+%      D   struct   traffic data
+%      t   double   lookahead time [min]
 %
 %   Output Argument
-%      * D as structure, structure of traffic data, with the added fields for
-%        estimated position and flight parameters data
+%      D   struct   traffic data with added _mov fields
 
 n = length(D);
-d = zeros(1, n);
-% Calculate distance travelled in t
-for j = 1 : n
-    d(j) = km2deg(((t / 60) * D(j).velocity * 3.6), geocradius(D(j).latitude, 'WGS84') / 1000) * 360;
-end
 
-% Horizontal shift - shift WGS84 coordinates with d
-x_mov = zeros(n, 1);
-y_mov = zeros(n, 1);
-for i = 1 : n
-    dist = d(i);
-    R = deg2rad(D(i).heading);
-    if (D(i).heading >= 0) && (D(i).heading <= 90)
-        x_mov(i) = (sin(R) * dist) / 360;
-        y_mov(i) = (cos(R) * dist) / 360;
-    elseif (D(i).heading > 90) && (D(i).heading <= 180)
-        x_mov(i) = (cos(R - deg2rad(90)) * dist) / 360;
-        y_mov(i) = - (sin(R - deg2rad(90)) * dist) / 360;
-    elseif (D(i).heading > 180) && (D(i).heading <= 270)
-        x_mov(i) = - (sin(R - deg2rad(180)) * dist) / 360;
-        y_mov(i) = - (cos(R - deg2rad(180)) * dist) / 360;
-    else
-        x_mov(i) = - (cos(R - deg2rad(270)) * dist) / 360;
-        y_mov(i) = (sin(R - deg2rad(270)) * dist) / 360;
-    end
-end
-for i = 1 : n
-    D(i).latitude_mov = D(i).latitude + y_mov(i);
-    D(i).longitude_mov = D(i).longitude + x_mov(i);
-end
+for i = 1:n
+    % Distance travelled [deg of arc] along Earth surface
+    R_earth_km = geocradius(D(i).latitude, 'WGS84') / 1000;
+    dist_km    = D(i).velocity * (t * 60) / 1000;  % v[m/s] * t[s] / 1000
+    dist_deg   = km2deg(dist_km, R_earth_km);
 
-% Verical shift - change atitude based on verical rate
-for i = 1 : n
-    if D(i).vertical_rate ~= 0
-        D(i).altitude_mov = D(i).altitude + D(i).vertical_rate * t;
-        D(i).flightlevel_mov = floor( floor(D(i).altitude_mov / 100) / 10) * 10;
-    else
-        D(i).flightlevel_mov = D(i).flightlevel;
-    end
+    % Horizontal shift (works for all headings)
+    hdg_rad = deg2rad(D(i).heading);
+    D(i).longitude_mov = D(i).longitude + sin(hdg_rad) * dist_deg;
+    D(i).latitude_mov  = D(i).latitude  + cos(hdg_rad) * dist_deg;
+
+    % Vertical shift [ft], vertical_rate assumed [ft/min]
+    D(i).altitude_mov    = D(i).altitude + D(i).vertical_rate * t;
+    D(i).flightlevel_mov = floor(D(i).altitude_mov / 1000) * 10;
 end
 end
