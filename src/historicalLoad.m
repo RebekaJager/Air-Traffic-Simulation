@@ -24,8 +24,8 @@ switch nargin
         year = '2025';
         month = '04';
     case 3
-        year = varargin{2};
-        month = varargin{3};
+        year = varargin{1};
+        month = varargin{2};
     otherwise
         error('Incorrect number of input arguments.')
 end
