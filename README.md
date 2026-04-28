@@ -54,8 +54,8 @@ air-traffic-simulation/
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/username/repo-name.git
-   cd repo-name
+   git clone https://github.com/RebekaJager/Air-Traffic-Simulation.git
+cd Air-Traffic-Simulation
    ```
 
 2. **Prepare input data:**
