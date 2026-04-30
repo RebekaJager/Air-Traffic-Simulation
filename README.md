@@ -51,18 +51,21 @@ air-traffic-simulation/
 ---
 
 ## 🚀 Usage
-
 1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/username/repo-name.git
-   cd repo-name
-   ```
-
-2. **Prepare input data:**
+```bash
+   git clone https://github.com/RebekaJager/Air-Traffic-Simulation.git
+   cd Air-Traffic-Simulation
+```
+2. **Initialize the MATLAB environment:**
+   - Open MATLAB and navigate to the `src/` folder.
+   - Run `init.m` once before executing any scripts or functions:
+```matlab
+     run('init.m')
+```
+3. **Prepare input data:**
    - Download historical ADS-B data from [ADS-B Exchange](https://www.adsbexchange.com) as `.mat` using loadHistorical function.
    - Or use live API with API_request function.
-
-3. **Run the simulation in MATLAB:**
+4. **Run the simulation in MATLAB:**
    - Open `src/simulation.m` or `src/script_one_iteration.m`.
    - Execute the script in MATLAB.
 
