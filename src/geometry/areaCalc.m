@@ -25,9 +25,7 @@ function [lat, lon, d, bordershp, areashp] = areaCalc(ISO_A2_country_code, t)
 
 
 % Load database
-scriptDir = fileparts(mfilename('fullpath'));
-dataPath = fullfile(scriptDir, '..', 'data', 'countries.geojson');
-
+dataPath = fullfile(getenv('PROJECT_ROOT'), 'data', 'countries.geojson');
 C = readgeotable(dataPath);
 
 % Check input
