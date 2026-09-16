@@ -1,5 +1,5 @@
 function [D] = getInside(D, bordershp)
-    % GETINSIDE - Mark aircraft inside (inside = 1) and outside (inside = 0) of
+%   GETINSIDE - Mark aircraft inside (inside = 1) and outside (inside = 0) of
 %   given border.
 %
 %   Syntax
