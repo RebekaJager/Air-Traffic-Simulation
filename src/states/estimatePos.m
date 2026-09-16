@@ -1,4 +1,5 @@
 function D = estimatePos(D, t)
+%
 % ESTIMATEPOS - Return the predicted future position of aircraft.
 %
 %   Syntax
@@ -10,22 +11,30 @@ function D = estimatePos(D, t)
 %
 %   Output Argument
 %      D   struct   traffic data with added _mov fields
+    if isempty(D)
+        return;
+    end
 
-n = length(D);
-
-for i = 1:n
-    % Distance travelled [deg of arc] along Earth surface
-    R_earth_km = geocradius(D(i).latitude, 'WGS84') / 1000;
-    dist_km    = D(i).velocity * (t * 60) / 1000;  % v[m/s] * t[s] / 1000
+    lats = [D.latitude];
+    lons = [D.longitude];
+    vels = [D.velocity];
+    hdgs = [D.heading];
+    alts = [D.altitude];
+    vrrs = [D.vertical_rate];
+    
+    R_earth_km = geocradius(lats, 'WGS84') / 1000;
+    dist_km    = vels .* (t * 60) ./ 1000;
     dist_deg   = km2deg(dist_km, R_earth_km);
-
-    % Horizontal shift (works for all headings)
-    hdg_rad = deg2rad(D(i).heading);
-    D(i).longitude_mov = D(i).longitude + sin(hdg_rad) * dist_deg;
-    D(i).latitude_mov  = D(i).latitude  + cos(hdg_rad) * dist_deg;
-
-    % Vertical shift [ft], vertical_rate assumed [ft/min]
-    D(i).altitude_mov    = D(i).altitude + D(i).vertical_rate * t;
-    D(i).flightlevel_mov = floor(D(i).altitude_mov / 1000) * 10;
-end
+    
+    hdg_rad = deg2rad(hdgs);
+    lon_mov = lons + sin(hdg_rad) .* dist_deg;
+    lat_mov = lats + cos(hdg_rad) .* dist_deg;
+    
+    alt_mov = alts + vrrs .* t;
+    fl_mov  = floor(alt_mov ./ 1000) .* 10;
+    
+    lon_c = num2cell(lon_mov); [D.longitude_mov] = lon_c{:};
+    lat_c = num2cell(lat_mov); [D.latitude_mov]  = lat_c{:};
+    alt_c = num2cell(alt_mov); [D.altitude_mov]  = alt_c{:};
+    fl_c  = num2cell(fl_mov);  [D.flightlevel_mov] = fl_c{:};
 end
