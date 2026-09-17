@@ -1,5 +1,4 @@
 function [S] = historicalLoad(index, varargin)
-
 % HISTORICALLOAD - Load given data point from ADS-B Exchange sample
 %   histroical data.
 %
@@ -17,63 +16,47 @@ function [S] = historicalLoad(index, varargin)
 %
 %   Output Arguments
 %      * S as structure, structure of ADS-B data as returned by the API.
-
-
-switch nargin
-    case 1
-        year = '2025';
-        month = '04';
-    case 3
-        year = varargin{1};
-        month = varargin{2};
-    otherwise
+    
+    if nargin == 1
+        year = '2025'; month = '04';
+    elseif nargin == 3
+        year = varargin{1}; month = varargin{2};
+    else
         error('Incorrect number of input arguments.')
-end
-if index > 235955
-    error('Maximum index exceeded.')
-end
-day = '01'; % sample data is available for the 1st of each month
-
-% Calculate possible data points
-startTime = datetime('00:00:00','Format','HHmmss');
-endTime = datetime('23:59:55','Format','HHmmss');
-timeVec = startTime:seconds(5):endTime;
-timeStr = datestr(timeVec, 'HHMMSS');
-timeStrCell = cellstr(timeStr);
-
-
-idx = timeStrCell{index};
-
-URL = strcat('https://samples.adsbexchange.com/readsb-hist/', year,...
-    '/', month, '/', day, '/', idx, 'Z.json.gz');
-
-success = false;
-trys = 0;
-fprintf('API request \n')
-ntry = 50;
-while success == false
-    try
-        trys = trys + 1;
-        fprintf('%d/%d try \n', trys, ntry)
-        S = webread(URL);
-        if isempty(S) == 0
-            success = true;
-        end
-        if (trys >= ntry) && (success == false)
-            fprintf('API request unsuccessful \n')
-            break;
-        end
-    catch ME
-        if trys >= ntry
-            fprintf('API request unsuccessful \n')
-            throw(ME)
-            break;
+    end
+    
+    if index > 235955 || index < 1
+        error('Index out of bounds.')
+    end
+    day = '01'; 
+    
+    total_seconds = (index - 1) * 5;
+    H = floor(total_seconds / 3600);
+    M = floor(mod(total_seconds, 3600) / 60);
+    S_sec = mod(total_seconds, 60);
+    idx = sprintf('%02d%02d%02d', H, M, S_sec);
+    % --------------------------------------------------------------
+    
+    URL = sprintf('https://samples.adsbexchange.com/readsb-hist/%s/%s/%s/%sZ.json.gz', year, month, day, idx);
+    
+    success = false;
+    trys = 0;
+    ntry = 50;
+    options = weboptions('Timeout', 10); 
+    
+    while ~success && trys < ntry
+        try
+            trys = trys + 1;
+            S = webread(URL, options);
+            if ~isempty(S)
+                success = true;
+            end
+        catch ME
+            if trys >= ntry
+                fprintf('API request unsuccessful after %d attempts.\n', ntry);
+                rethrow(ME);
+            end
+            pause(0.5);
         end
     end
-
-    try
-        datetime(S.now, 'ConvertFrom', 'posixtime')
-    catch
-    end
-
 end
