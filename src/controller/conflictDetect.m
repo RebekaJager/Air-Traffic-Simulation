@@ -25,93 +25,84 @@ function CM = conflictDetect(D, varargin)
 %   Output Arguments
 %      * CM as double, conflict matrix (symmetric matrix).
 
-
-% Set default look-ahead time if not provided
-look_ahead_time = 2; % default value in minutes
+look_ahead_time = 2; 
 if ~isempty(varargin)
     look_ahead_time = varargin{1};
 end
 
-n = length(D); % number of aircraft
-CM = zeros(n); % initialize conflict matrix
+n = length(D); 
+CM = zeros(n); 
+if n < 2
+    return;
+end
+
+% Pre-calculate spatial data to eliminate O(n^2) redundant math
+R = 6371000;
+lat_rad = deg2rad([D.latitude]);
+lon_rad = deg2rad([D.longitude]);
+hdg_rad = deg2rad([D.heading]);
+v = [D.velocity]; 
+
+lat0 = mean(lat_rad);
+X = R .* lon_rad .* cos(lat0);
+Y = R .* lat_rad;
+
+Vx = v .* sin(hdg_rad);
+Vy = v .* cos(hdg_rad);
 
 for i = 1 : n
-    for j = 1 : n
-        if i >= j, continue, end
-        if D(i).flightlevel == D(j).flightlevel    % same level
-            [t_min, d_min] = closestApproach(D(i).latitude, D(i).longitude, D(i).velocity, D(i).heading, ...
-                                             D(j).latitude, D(j).longitude, D(j).velocity, D(j).heading);
-            if d_min < 5 && t_min < look_ahead_time
-                CM(i, j) = 1;
+    for j = i+1 : n
+        % Vector math inline for maximum speed
+        dp = [X(i) - X(j), Y(i) - Y(j)];
+        dv = [Vx(i) - Vx(j), Vy(i) - Vy(j)];
+        
+        dv2 = dot(dv, dv);
+        if dv2 < 1e-8
+            t_min = 0;
+        else
+            t_min = -dot(dp, dv) / dv2;
+            if t_min < 0
+                t_min = 0;
             end
-        elseif abs(D(i).flightlevel - D(j).flightlevel) == 10
-            idxs = [i j];
-            [~, idx] = min([D(i).flightlevel D(j).flightlevel]);
-            if D(idxs(idx)).vertical_rate > 0 || ...   % the lower aircraft is climbing
-               D(idxs(3 - idx)).vertical_rate < 0      % the higher aircraft is descending
-                [t_min, d_min] = closestApproach(D(1).latitude, D(i).longitude, D(i).velocity, D(i).heading, ...
-                                                 D(2).latitude, D(j).longitude, D(j).velocity, D(j).heading);
-                if d_min < 5 && t_min < look_ahead_time
+        end
+        
+        d_min = norm(dp + dv * t_min) / 1852;
+        t_min_min = t_min / 60;
+        
+        if d_min < 5 && t_min_min < look_ahead_time
+            if D(i).flightlevel == D(j).flightlevel 
+                CM(i, j) = 1;
+            elseif abs(D(i).flightlevel - D(j).flightlevel) == 10
+                idxs = [i j];
+                [~, idx] = min([D(i).flightlevel D(j).flightlevel]);
+                if D(idxs(idx)).vertical_rate > 0 || D(idxs(3 - idx)).vertical_rate < 0      
                     CM(i, j) = 2;
                 end
-            end
-        elseif isfield(D, "flightlevel_req")
-            if D(i).flightlevel_req ~= 0
-                if ((D(i).flightlevel > D(j).flightlevel) && (D(i).flightlevel_req < D(i).flightlevel)) || ... % aircraft i is higher and requested lower
-                    ((D(i).flightlevel < D(j).flightlevel) && (D(i).flightlevel_req > D(j).flightlevel))       % aircraft i is lower and requested higher
-                    [t_min, d_min] = closestApproach(D(1).latitude, D(i).longitude, D(i).velocity, D(i).heading, ...
-                                                     D(2).latitude, D(j).longitude, D(j).velocity, D(j).heading);
-                    if d_min < 5 && t_min < look_ahead_time
+            elseif isfield(D, 'flightlevel_req')
+                % Safely extract requests, avoiding crashes on empty [] arrays
+                req_i = D(i).flightlevel;
+                if ~isempty(D(i).flightlevel_req) && D(i).flightlevel_req ~= 0
+                    req_i = D(i).flightlevel_req;
+                end
+                
+                req_j = D(j).flightlevel;
+                if ~isempty(D(j).flightlevel_req) && D(j).flightlevel_req ~= 0
+                    req_j = D(j).flightlevel_req;
+                end
+                
+                % Check if either aircraft has an active request forcing a level cross
+                if req_i ~= D(i).flightlevel || req_j ~= D(j).flightlevel
+                    if ((D(i).flightlevel > D(j).flightlevel) && (req_i < D(i).flightlevel)) || ... 
+                       ((D(i).flightlevel < D(j).flightlevel) && (req_i > D(j).flightlevel)) || ...
+                       ((D(j).flightlevel > D(i).flightlevel) && (req_j < D(j).flightlevel)) || ...
+                       ((D(j).flightlevel < D(i).flightlevel) && (req_j > D(i).flightlevel))
                         CM(i, j) = 3;
                     end
                 end
             end
         end
-
     end
-
 end
 
 CM = triu(CM) + triu(CM).' - diag(diag(CM));
-    function [t_min, d_min] = closestApproach(lat1, lon1, v1, hdg1, ...
-            lat2, lon2, v2, hdg2)
-
-        hdg1 = deg2rad(hdg1);
-        hdg2 = deg2rad(hdg2);
-
-        lat0 = lat1;
-        lon0 = lon1;
-
-        R = 6371000;
-
-        % The simple planar approximation can be considered sufficiently 
-        % accurate due to the short distances.
-        dLat1 = deg2rad(lat1 - lat0);
-        dLon1 = deg2rad(lon1 - lon0);
-        dLat2 = deg2rad(lat2 - lat0);
-        dLon2 = deg2rad(lon2 - lon0);
-
-        p1 = [R * dLon1 * cos(deg2rad(lat0)), R * dLat1]; % [East, North]
-        p2 = [R * dLon2 * cos(deg2rad(lat0)), R * dLat2];
-
-        v1_vec = [v1 * sin(hdg1), v1 * cos(hdg1)];
-        v2_vec = [v2 * sin(hdg2), v2 * cos(hdg2)];
-
-        dp = p1 - p2;
-        dv = v1_vec - v2_vec;
-
-        t_min = -dot(dp, dv) / (dot(dv, dv) + eps);
-        if t_min < 0
-            t_min = 0; % in the past
-        end
-
-        % positions at closest approach
-        r1 = p1 + v1_vec * t_min;
-        r2 = p2 + v2_vec * t_min;
-
-        d_min = norm(r1 - r2) / 1852;
-
-        t_min = t_min / 60;
-
-    end
 end
