@@ -23,20 +23,22 @@ function [lat, lon, d, bordershp, areashp] = areaCalc(ISO_A2_country_code, t)
 %         (based on the center point and distance calculated) fo filtering
 %         aircraft position data.
 
-
-% Load database
+% Load database (single load)
 dataPath = fullfile(getenv('PROJECT_ROOT'), 'data', 'countries.geojson');
 C = readgeotable(dataPath);
 
 % Check input
 isocode = ISO_A2_country_code;
-while sum(C.ISO_A2 == isocode) ~= 1
+if sum(C.ISO_A2 == isocode) ~= 1
     error('Not ISO A2 country code');
 end
+
 % Show country name
 disp(C.ADMIN(C.ISO_A2 == isocode))
-% Overwite database
+
+% Overwrite database with selected country
 C = C(C.ISO_A2 == isocode, :);
+
 % Output shape file
 bordershp = C.Shape;
 
@@ -53,11 +55,12 @@ lon = (lomax + lomin) / 2;
 
 % Offset distance for outside area (assuming the speed of 1100 km/h to
 % avoid handling too much data and discarding arriving aircraft)
-d = 1100*(t/60) / 1.852;
+d = 1100 * (t / 60) / 1.852;
 
 % Calculate shape file of area
 num_points = 360; % resolution for circumference
 az = linspace(0, 360, num_points);
-[lat_circle, lon_circe] = reckon(lat, lon, km2deg(d * 1.852), az);
-areashp = geopolyshape(lat_circle, lon_circe);
+[lat_circle, lon_circle] = reckon(lat, lon, km2deg(d * 1.852), az);
+areashp = geopolyshape(lat_circle, lon_circle);
+
 end

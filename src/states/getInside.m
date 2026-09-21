@@ -1,6 +1,5 @@
 function [D] = getInside(D, bordershp)
-
-% GETINSIDE - Mark aircraft inside (inside = 1) and outside (inside = 0) of
+%   GETINSIDE - Mark aircraft inside (inside = 1) and outside (inside = 0) of
 %   given border.
 %
 %   Syntax
@@ -13,17 +12,14 @@ function [D] = getInside(D, bordershp)
 % 
 %   Output Arguments
 %       * D as structure, structure of traffic data
-
-n = length(D);
-
-A_C = geopointshape([D(:).latitude], [D(:).longitude]);
-MO = isinterior(bordershp, A_C);
-for i = n : -1 : 1
-    if MO(i) == 0
-        D(i).inside = 0;
-    else
-        D(i).inside = 1;
+    
+    if isempty(D)
+        return;
     end
-end
-
+    
+    A_C = geopointshape([D(:).latitude], [D(:).longitude]);
+    MO = isinterior(bordershp, A_C);
+    
+    inside_vals = num2cell(double(MO));
+    [D.inside] = inside_vals{:};
 end

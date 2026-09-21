@@ -18,10 +18,12 @@ hour = 0;
 minutes = 0;
 seconds = 0;
 
-time = round((hour * 3600 + minutes * 60 + seconds)/5) * 5;
-time_str = sprintf('%06d', time);
+total_seconds = round((hour * 3600 + minutes * 60 + seconds) / 5) * 5;
+H = floor(total_seconds / 3600);
+M = floor(mod(total_seconds, 3600) / 60);
+S_sec = mod(total_seconds, 60);
 
-URL = strcat('https://samples.adsbexchange.com/readsb-hist/', year,...
-    '/', month, '/', day, '/', time_str, 'Z.json.gz');
+time_str = sprintf('%02d%02d%02d', H, M, S_sec);
+URL = sprintf('https://samples.adsbexchange.com/readsb-hist/%s/%s/%s/%sZ.json.gz', year, month, day, time_str);
 S = webread(URL);
 datetime(S.now, 'ConvertFrom', 'posixtime')

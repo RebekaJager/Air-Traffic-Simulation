@@ -4,7 +4,7 @@ function [C1] = generateRequests(D, varargin)
 %   requested change is randomized within a specified range. The changed
 %   flight parameter and the sign of change is randomly selected.
 % 
-%   Sytax
+%   Syntax
 %       [C1] = GENERATEREQUESTS(D) Use default parameters for request rate and
 %        request ranges.
 %       [C1] = GENERATEREQUESTS(D, ac) User defined request rate and default
@@ -49,39 +49,68 @@ switch nargin
         error('Incorect number of input  arguments.')
 end
 
+% Input fallback just in case 'ac' is passed as 5 instead of 0.05
+if ac > 1
+    ac = ac / 100;
+end
+
 C1 = D([D(:).inside] == 1); % A/C inside sector
-n = round(ac*length(C1));  % number of A/C making request
-req = randperm(length(D), n); % requesting aircraft
-for i = 1 : length(req)
-    j = rand();
-    random_idx = randi(length(req)); % store index of req separately for deletion
-    idx = req(random_idx); % select random A/C from all requests
-    if j < 0.3333   % new heading
-        C1(idx).heading_req = D(idx).heading + heading_change(randi(length(heading_change)));
-    elseif j < 0.6666   % new flightlevel
+n_ac = length(C1);
+
+if n_ac == 0
+    return; % Early exit if no aircraft in sector
+end
+
+n = round(ac * n_ac);  % number of A/C making request
+% BUG FIX: use length(C1) instead of length(D) to prevent out-of-bounds indexing
+req = randperm(n_ac, n); % requesting aircraft indices
+
+for i = 1 : n
+    idx = req(i); % Sequential read from the already shuffled index array
+    req_type = rand();
+    
+    if req_type < 0.3333   % new heading
+        delta_hdg = heading_change(randi(length(heading_change)));
+        % BUG FIX: randomly assign turning direction (+ or -)
+        if rand() < 0.5
+            delta_hdg = -delta_hdg;
+        end
+        % BUG FIX: Keep heading between 0-360 degrees
+        C1(idx).heading_req = mod(C1(idx).heading + delta_hdg, 360);
+        
+    elseif req_type < 0.6666   % new flightlevel
         delta_fl = flightlevel_change(randi(length(flightlevel_change)));
-        new_fl_plus = D(idx).flightlevel + delta_fl;
-        new_fl_minus = D(idx).flightlevel - delta_fl;
-        k = rand();
-        if k <= 0.5
-            new_fl_1 = new_fl_plus;
-            new_fl_2 = new_fl_minus;
-        else
-            new_fl_1 = new_fl_minus;
-            new_fl_2 = new_fl_plus;
+        new_fl_plus = C1(idx).flightlevel + delta_fl;
+        new_fl_minus = C1(idx).flightlevel - delta_fl;
+        
+        valid_plus = (new_fl_plus >= 120 && new_fl_plus <= 400);
+        valid_minus = (new_fl_minus >= 120 && new_fl_minus <= 400);
+        
+        % BUG FIX: Safe flight level validation preventing out-of-bounds FL assignments
+        if valid_plus && valid_minus
+            if rand() <= 0.5
+                C1(idx).flightlevel_req = new_fl_plus;
+            else
+                C1(idx).flightlevel_req = new_fl_minus;
+            end
+        elseif valid_plus
+            C1(idx).flightlevel_req = new_fl_plus;
+        elseif valid_minus
+            C1(idx).flightlevel_req = new_fl_minus;
         end
-        if new_fl_1 >= 120 && new_fl_1 <= 400
-            C1(idx).flightlevel_req = new_fl_1;
-        else
-            C1(idx).flightlevel_req = new_fl_2;
-        end
+        % If neither is valid, no valid request can be made, keep it unchanged.
+        
     else    % new speed
-        delta_vel = D(idx).velocity * speed_change(randi(length(speed_change)));
-        if rand < 0.5
-            C1(idx).velocity_req = D(idx).velocity + delta_vel;
+        % BUG FIX: Divide percentage by 100
+        delta_vel_percent = speed_change(randi(length(speed_change))) / 100;
+        delta_vel = C1(idx).velocity * delta_vel_percent;
+        
+        if rand() < 0.5
+            C1(idx).velocity_req = C1(idx).velocity + delta_vel;
         else
-            C1(idx).velocity_req = D(idx).velocity - delta_vel;
+            % Safeguard to prevent negative speeds
+            C1(idx).velocity_req = max(0, C1(idx).velocity - delta_vel);
         end
     end
-    req(random_idx) = [];
+end
 end

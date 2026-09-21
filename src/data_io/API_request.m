@@ -20,7 +20,7 @@ function [S] = API_request(ntry, lat, lon, d)
 %      * S as structure, structure of ADS-B data as returned by the API.
 
 % Assemble URL
-URL = strcat('https://opendata.adsb.fi/api/v2/lat/', num2str(lat), '/lon/', num2str(lon), '/dist/', num2str(d));
+URL = sprintf('https://opendata.adsb.fi/api/v2/lat/%.4f/lon/%.4f/dist/%.1f', lat, lon, d);
 % Set variables for while loop
 success = false;
 trys = 0;

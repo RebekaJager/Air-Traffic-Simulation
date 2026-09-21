@@ -27,39 +27,54 @@ switch nargin
         error('Incorrect number of input arguments.')
 end
 
-
 C = C1;
-for i = 1 : length(C) % accept all pilot requests
-    if isfield(C, 'heading_req') && isempty(C(i).heading_req) == 0
+% 1. Accept pilot requests (Fixed copy-paste bug for vertical_rate_req)
+for i = 1 : length(C) 
+    if isfield(C, 'heading_req') && ~isempty(C(i).heading_req)
         C(i).ATC_approval = 1;
         C(i).heading_atc = C(i).heading_req;
     end
-    if isfield(C, 'flightlevel_req') && isempty(C(i).flightlevel_req) == 0
+    if isfield(C, 'flightlevel_req') && ~isempty(C(i).flightlevel_req)
         C(i).ATC_approval = 1;
         C(i).flightlevel_atc = C(i).flightlevel_req;
     end
-    if isfield(C, 'velocity_req') && isempty(C(i).velocity_req) == 0
+    if isfield(C, 'velocity_req') && ~isempty(C(i).velocity_req)
         C(i).ATC_approval = 1;
         C(i).velocity_atc = C(i).velocity_req;
     end
-    if isfield(C, 'vertical_rate_req') && isempty(C(i).velocity_req) == 0
+    if isfield(C, 'vertical_rate_req') && ~isempty(C(i).vertical_rate_req)
         C(i).ATC_approval = 1;
         C(i).vertical_rate_atc = C(i).vertical_rate_req;
     end
 end
 
+% 2. Detect and solve conflicts
 for t = 0 : 10/60 : look_ahead_time
     P = estimatePos(C, t);
-    for i = 1 : length(P)
-        for j = 1 : length(P)
-            if i ~= j && P(i).flightlevel == P(j).flightlevel
-                d = distance(P(i).latitude_mov, P(i).longitude_mov, P(j).latitude_mov, P(j).longitude_mov, wgs84Ellipsoid('nauticalmile'));
-                if d < 5 % flag horizontal conflicts
+    n = length(P);
+    
+    % Fast equirectangular distance prep
+    R = 6371000;
+    if n > 0
+        lat_rad = deg2rad([P.latitude_mov]);
+        lon_rad = deg2rad([P.longitude_mov]);
+        lat0 = mean(lat_rad);
+        X = R .* lon_rad .* cos(lat0);
+        Y = R .* lat_rad;
+    end
+    
+    for i = 1 : n
+        for j = i+1 : n
+            if P(i).flightlevel == P(j).flightlevel
+                % Fast distance check replacing wgs84Ellipsoid
+                d_meters = sqrt((X(i) - X(j))^2 + (Y(i) - Y(j))^2);
+                d = d_meters / 1852;
+                
+                if d < 5 
                     C(i).conflict = 1;
                     C(j).conflict = 1;
                 end
-                % solve vertical conflicts
-            elseif i ~= j && abs(P(i).flightlevel - P(j).flightlevel) < 10
+            elseif abs(P(i).flightlevel - P(j).flightlevel) < 10
                 if P(i).flightlevel > P(j).flightlevel
                     C(i).flightlevel_atc = C(i).flightlevel + 10;
                 else
@@ -68,14 +83,11 @@ for t = 0 : 10/60 : look_ahead_time
             end
         end
     end
-    % solve horizontal conflicts
-    for i = 1 : length(C)
-        if isfield(C, 'conflict')
-            if C(i).conflict == 1
-                C(i).heading_atc = C(i).heading + 30;
-            end
+    
+    for i = 1 : n
+        if isfield(C, 'conflict') && C(i).conflict == 1
+            C(i).heading_atc = C(i).heading + 30;
         end
     end
-
 end
 end

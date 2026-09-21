@@ -22,83 +22,70 @@ function [D] = controlStates(D, C, varargin)
 %   Output Argument
 %      * D as structure, structure of traffic data, changed according to ATC
 %         instruction and moved accoring to step time.
-
-if nargin == 2
-    pilot_error_rate = 0.5;
-    wrongness = 20;
-elseif nargin == 4
-    pilot_error_rate = varargin{3};
-    wrongness = varargin{4};
-else
-    error('Incorrect number of input arguments.')
-end
-% mark those aircraft that have an ATC instruction
-if isfield(C, 'flightlevel_atc')
-    implementing_idx_fl = ~cellfun(@isempty, {C(:).flightlevel_atc});
-else
-    implementing_idx_fl = zeros(1, length(C));
-end
-if isfield(C, 'heading_atc')
-    implementing_idx_hd = ~cellfun(@isempty, {C(:).heading_atc});
-else
-    implementing_idx_hd = zeros(1, length(C));
-end
-if isfield(C, 'velocity_atc')
-    implementing_idx_vel = ~cellfun(@isempty, {C(:).velocity_atc});
-else
-    implementing_idx_vel = zeros(1, length(C));
-end
-if isfield(C, 'vertical_rate_atc')
-    implementing_idx_vs = ~cellfun(@isempty, {C(:).vertical_rate_atc});
-else
-    implementing_idx_vs = zeros(1, length(C));
-end
-implementing_idx = implementing_idx_hd | implementing_idx_fl | implementing_idx_vel | implementing_idx_vs;
-implementing_nr = sum(implementing_idx);
-human_error_nr = round(implementing_nr*(pilot_error_rate / 100));
-
-idx_to_change = find(implementing_idx == 1);
-idx_to_change_w_error = idx_to_change(randperm(length(idx_to_change), human_error_nr));
-
-for i = 1 : length(idx_to_change)
-    if isfield(C, 'heading_atc') && isempty(C(i).heading_atc) == 0
-        if ismember(idx_to_change(i), idx_to_change_w_error)
-            C(i).heading = C(i).heading_atc * (1 + (wrongness / 100) * (2 * rand - 1));
-        else
-            C(i).heading = C(i).heading_atc;
+    
+    if nargin == 2
+        pilot_error_rate = 0.5;
+        wrongness = 20;
+    elseif nargin == 4
+        pilot_error_rate = varargin{3};
+        wrongness = varargin{4};
+    else
+        error('Incorrect number of input arguments.')
+    end
+    
+    % Mark those aircraft that have an ATC instruction
+    implementing_idx_fl  = isfield(C, 'flightlevel_atc') && ~all(cellfun(@isempty, {C(:).flightlevel_atc}));
+    implementing_idx_hd  = isfield(C, 'heading_atc') && ~all(cellfun(@isempty, {C(:).heading_atc}));
+    implementing_idx_vel = isfield(C, 'velocity_atc') && ~all(cellfun(@isempty, {C(:).velocity_atc}));
+    implementing_idx_vs  = isfield(C, 'vertical_rate_atc') && ~all(cellfun(@isempty, {C(:).vertical_rate_atc}));
+    
+    % Simplified indexing - we find the actual indices in C
+    implementing_idx = zeros(1, length(C));
+    for k = 1:length(C)
+        if (implementing_idx_hd && ~isempty(C(k).heading_atc)) || ...
+           (implementing_idx_fl && ~isempty(C(k).flightlevel_atc)) || ...
+           (implementing_idx_vel && ~isempty(C(k).velocity_atc)) || ...
+           (implementing_idx_vs && ~isempty(C(k).vertical_rate_atc))
+            implementing_idx(k) = 1;
         end
     end
-    if isfield(C, 'flightlevel_atc') && isempty(C(i).flightlevel_atc) == 0
-        if ismember(idx_to_change(i), idx_to_change_w_error)
-            C(i).flightlevel = C(i).flightlevel_atc * (1 + (wrongness / 100) * (2 * rand - 1));
-        else
-            C(i).flightlevel = C(i).flightlevel_atc;
+    
+    idx_to_change = find(implementing_idx == 1);
+    human_error_nr = round(length(idx_to_change) * (pilot_error_rate / 100));
+    idx_to_change_w_error = idx_to_change(randperm(length(idx_to_change), human_error_nr));
+    
+    for k = 1 : length(idx_to_change)
+        idx = idx_to_change(k);
+        has_error = ismember(idx, idx_to_change_w_error);
+        error_mult = (1 + (wrongness / 100) * (2 * rand - 1));
+        
+        if isfield(C, 'heading_atc') && ~isempty(C(idx).heading_atc)
+            C(idx).heading = C(idx).heading_atc * (1 + (has_error * (error_mult - 1)));
+        end
+        if isfield(C, 'flightlevel_atc') && ~isempty(C(idx).flightlevel_atc)
+            C(idx).flightlevel = C(idx).flightlevel_atc * (1 + (has_error * (error_mult - 1)));
+        end
+        if isfield(C, 'velocity_atc') && ~isempty(C(idx).velocity_atc)
+            C(idx).velocity = C(idx).velocity_atc * (1 + (has_error * (error_mult - 1)));
+        end
+        if isfield(C, 'vertical_rate_atc') && ~isempty(C(idx).vertical_rate_atc)
+            C(idx).vertical_rate = C(idx).vertical_rate_atc * (1 + (has_error * (error_mult - 1)));
         end
     end
-    if isfield(C, 'velocity_atc') && isempty(C(i).velocity_atc) == 0
-        if ismember(idx_to_change(i), idx_to_change_w_error)
-            C(i).velocity = C(i).velocity_atc * (1 + (wrongness / 100) * (2 * rand - 1));
-        else
-            C(i).velocity = C(i).velocity_atc;
-        end
+    
+    calls_D = {D.callsign};
+    calls_C = {C.callsign};
+    
+    [Lia, Locb] = ismember(calls_D, calls_C);
+    
+    idx_D = find(Lia);
+    idx_C = Locb(Lia);
+    
+    if ~isempty(idx_D)
+  
+        hdg_update = {C(idx_C).heading};
+        fl_update = {C(idx_C).flightlevel};
+        [D(idx_D).heading] = hdg_update{:};
+        [D(idx_D).flightlevel] = fl_update{:};
     end
-    if isfield(C, 'vertical_rate_atc') && isempty(C(i).vretical_rate_atc) == 0
-        if ismember(idx_to_change(i), idx_to_change_w_error)
-            C(i).vertical_rate = C(i).vertical_rate_atc * (1 + (wrongness / 100) * (2 * rand - 1));
-        else
-            C(i).vertical_rate = C(i).vertical_rate_atc;
-        end
-    end
-end
-
-% update positions in D from C
-for i = 1 : length(D)
-    for j = 1 : length(C)
-        if strcmp(D(i).callsign, C(j).callsign)
-            D(i).heading = C(j).heading;
-            D(i).flightlevel = C(j).flightlevel;
-            break;
-        end
-    end
-end
 end

@@ -1,0 +1,93 @@
+function conflicts = findConflicts(D, t_lookahead, bordershp)
+% FINDCONFLICTS - Find pairwise conflicts using Closest Point of Approach.
+%
+%   Syntax
+%       conflicts = FINDCONFLICTS(D, t_lookahead, bordershp)
+%
+%   Input Arguments
+%      D            struct        traffic data with current and _mov fields
+%      t_lookahead  double        lookahead time [min]
+%      bordershp    geopolyshape  border of the area of interest
+%
+%   Output Arguments
+%      conflicts    struct   with fields: callsign1, callsign2, t_cpa [min]
+
+    conflicts = struct('callsign1', {}, 'callsign2', {}, 't_cpa', {});
+    
+    if length(D) < 2
+        return;
+    end
+
+    % Pre-extract border coordinates for fast polygon checking 
+    % outside the loop to avoid Mapping Toolbox overhead
+    lat_bnd = bordershp.Latitude;
+    lon_bnd = bordershp.Longitude;
+
+    for i = 1:length(D)
+        for j = i+1:length(D)
+            [is_conf, t_cpa] = cpa_conflict(D(i), D(j), t_lookahead);
+            if is_conf
+                % Check if CPA position of either aircraft is inside the area
+                lat_cpa_a = D(i).latitude  + (D(i).latitude_mov  - D(i).latitude)  * (t_cpa / t_lookahead);
+                lon_cpa_a = D(i).longitude + (D(i).longitude_mov - D(i).longitude) * (t_cpa / t_lookahead);
+                lat_cpa_b = D(j).latitude  + (D(j).latitude_mov  - D(j).latitude)  * (t_cpa / t_lookahead);
+                lon_cpa_b = D(j).longitude + (D(j).longitude_mov - D(j).longitude) * (t_cpa / t_lookahead);
+
+                % Fast in-polygon check
+                in_a = inpolygon(lon_cpa_a, lat_cpa_a, lon_bnd, lat_bnd);
+                in_b = inpolygon(lon_cpa_b, lat_cpa_b, lon_bnd, lat_bnd);
+                
+                if in_a || in_b
+                    conflicts(end+1).callsign1 = D(i).callsign;
+                    conflicts(end).callsign2   = D(j).callsign;
+                    conflicts(end).t_cpa       = t_cpa;
+                end
+            end
+        end
+    end
+end
+
+function [result, t_cpa] = cpa_conflict(a, b, t_lookahead)
+    NM_PER_DEG_LAT = 60.0;  % 1 deg latitude = 60 NM, constant
+    mid_lat = deg2rad((a.latitude + b.latitude) / 2);
+
+    % --- Current relative position [NM] ---
+    dx0 = (b.longitude - a.longitude) * NM_PER_DEG_LAT * cos(mid_lat);
+    dy0 = (b.latitude  - a.latitude)  * NM_PER_DEG_LAT;
+    dz0 =  b.altitude  - a.altitude;   % [ft]
+
+    % --- Relative position at end of lookahead [NM / ft] ---
+    dx1 = (b.longitude_mov - a.longitude_mov) * NM_PER_DEG_LAT * cos(mid_lat);
+    dy1 = (b.latitude_mov  - a.latitude_mov)  * NM_PER_DEG_LAT;
+    dz1 =  b.altitude_mov  - a.altitude_mov;  % [ft]
+
+    % --- Relative velocity [NM/min or ft/min] ---
+    % (change in relative position over the lookahead interval)
+    vx = (dx1 - dx0) / t_lookahead;
+    vy = (dy1 - dy0) / t_lookahead;
+    vz = (dz1 - dz0) / t_lookahead;
+
+    % --- Time of horizontal CPA [min] ---
+    % Minimize dx(t)^2 + dy(t)^2, derivative = 0 gives:
+    % t_cpa = -dot(rel_pos, rel_vel) / dot(rel_vel, rel_vel)
+    denom_h = vx^2 + vy^2;
+    if denom_h < 1e-10  % aircraft moving in parallel horizontally
+        t_cpa = 0;
+    else
+        t_cpa = -(dx0*vx + dy0*vy) / denom_h;
+    end
+
+    % Clamp to lookahead interval
+    t_cpa = max(0, min(t_cpa, t_lookahead));
+
+    % --- Separation at CPA ---
+    dx_cpa = dx0 + vx * t_cpa;
+    dy_cpa = dy0 + vy * t_cpa;
+    dz_cpa = dz0 + vz * t_cpa;
+
+    horiz_sep = sqrt(dx_cpa^2 + dy_cpa^2);  % [NM]
+    vert_sep  = abs(dz_cpa);                 % [ft]
+
+    result = (horiz_sep < 5) && (vert_sep < 1000);
+    t_cpa  = t_cpa;  % [min] from now
+end
