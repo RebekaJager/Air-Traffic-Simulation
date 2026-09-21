@@ -14,44 +14,42 @@ function visual = stateMapping_simple(D, label)
 %   Output Arguments
 %      * visual as figure, mapped visualization of the traffic data
 
-
 n = length(D);
+if n == 0
+    visual = [];
+    return;
+end
+
 % Position data
 visual = geoscatter([D(:).latitude], [D(:).longitude], "+");
-linkdata on
-drawnow
-hold on
+hold on;
 
 % Option to show data from upper levels
 if isfield(D, 'conflict_flag')
     szinek = {"g", "r", "c"};
     for i = 1 : 3
-        conf = find([D(:).conflict_flag] == i);
-        geoscatter([D(conf).latitude], [D(conf).longitude], 'o', szinek{i});
-        hold on
+        conf = [D(:).conflict_flag] == i;
+        if any(conf)
+            geoscatter([D(conf).latitude], [D(conf).longitude], 'o', szinek{i});
+        end
     end
 end
 
-% Draw vector based on estimation time frame
+% Draw vector based on estimation time frame (Vectorized for extreme speedup)
 if isfield(D, 'latitude_mov')
-    for i = 1 : n
-        geoplot([D(i).latitude D(i).latitude_mov], [D(i).longitude D(i).longitude_mov], "--b","LineWidth",0.5);
-        hold on
-    end
-    hold off
-    shg
+    lat_lines = [[D.latitude]; [D.latitude_mov]; NaN(1, n)];
+    lon_lines = [[D.longitude]; [D.longitude_mov]; NaN(1, n)];
+    geoplot(lat_lines(:), lon_lines(:), "--b", "LineWidth", 0.5);
 end
 
-% Show label
+% Show label (Vectorized text plotting)
 if label == 1
     dx = 0.1;
     dy = 0.1;
-    % text([D(:).latitude]+dx, [D(:).longitude]+dy, {D(:).flightlevel}, 'FontSize', 9)
-    for i = 1 : n
-        text(D(i).latitude+dx, D(i).longitude+dy, sprintf('%s\n%d', D(i).callsign, D(i).flightlevel),'FontSize', 9)
-    end
-    % dx = dx * 1.6;
-    % text([D(:).latitude]+dx, [D(:).longitude]+dy, {D(:).callsign}, 'FontSize', 9)
-    shg
+    str_labels = arrayfun(@(x) sprintf('%s\n%d', x.callsign, x.flightlevel), D, 'UniformOutput', false);
+    text([D.latitude] + dx, [D.longitude] + dy, str_labels, 'FontSize', 9);
 end
+
+hold off;
+drawnow;
 end
