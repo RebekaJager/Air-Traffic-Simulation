@@ -13,49 +13,46 @@ function visual = stateMapping(D, label, bordershp)
 %   Output Arguments
 %      * visual as figure, mapped visualization of the traffic data
 
-
 n = length(D);
-% Position data
+if n == 0
+    visual = []; 
+    return; 
+end
+
 gx = geoaxes;
 clf(gx)
 visual = geoscatter(gx, [D(:).latitude], [D(:).longitude], "+");
 geolimits(gx, [45.4536073725453, 48.82967575704588], [15.930495130162031, 22.82990894515879]);
 gx.Basemap = 'none';
-hold (gx, 'on');
+hold(gx, 'on');
 geoplot(gx, bordershp, 'FaceColor', 'none');
-linkdata on
-%drawnow
-hold on
 
 % Option to show data from upper levels
 if isfield(D, 'conflict_flag')
     szinek = {"g", "r", "c"};
     for i = 1 : 3
-        conf = find([D(:).conflict_flag] == i);
-        geoscatter(gx, [D(conf).latitude], [D(conf).longitude], 'o', szinek{i});
-        hold on
+        conf = [D(:).conflict_flag] == i;
+        if any(conf)
+            geoscatter(gx, [D(conf).latitude], [D(conf).longitude], 'o', szinek{i});
+        end
     end
 end
-% Draw vector based on estimation time frame
+
+% Draw vector based on estimation time frame (Vectorized for extreme speedup)
 if isfield(D, 'latitude_mov')
-    for i = 1 : n
-        geoplot(gx, [D(i).latitude D(i).latitude_mov], [D(i).longitude D(i).longitude_mov], "--b","LineWidth",0.5);
-        hold on
-    end
-    hold off
-    shg
+    lat_lines = [[D.latitude]; [D.latitude_mov]; NaN(1, n)];
+    lon_lines = [[D.longitude]; [D.longitude_mov]; NaN(1, n)];
+    geoplot(gx, lat_lines(:), lon_lines(:), "--b", "LineWidth", 0.5);
 end
-drawnow
-% Show label
+
+% Show label (Vectorized text plotting)
 if label == 1
     dx = 0.1;
     dy = 0.1;
-    % text([D(:).latitude]+dx, [D(:).longitude]+dy, {D(:).flightlevel}, 'FontSize', 9)
-    for i = 1 : n
-        text(gx, D(i).latitude+dx, D(i).longitude+dy, sprintf('%s\n%d', D(i).callsign, D(i).flightlevel),'FontSize', 9)
-    end
-    % dx = dx * 1.6;
-    % text([D(:).latitude]+dx, [D(:).longitude]+dy, {D(:).callsign}, 'FontSize', 9)
-    shg
+    str_labels = arrayfun(@(x) sprintf('%s\n%d', x.callsign, x.flightlevel), D, 'UniformOutput', false);
+    text(gx, [D.latitude] + dx, [D.longitude] + dy, str_labels, 'FontSize', 9);
 end
+
+hold(gx, 'off');
+drawnow;
 end
