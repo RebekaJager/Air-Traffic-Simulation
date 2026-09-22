@@ -1,8 +1,8 @@
 function [C] = controllerActions(C1, varargin)
-
-% CONTROLLERACTIONS - Demo controller algorithm. If a separation infridgement is detected
-%   within the look ahead time, a resolution instruction is
-%   given.
+% CONTROLLERACTIONS - Demo controller algorithm. If a separation infringement is detected
+%   within the look ahead time, a resolution instruction is given.
+%   Note: This is a crude baseline algorithm. For advanced resolution, use
+%   conflictDetect and conflictSolve.
 %
 %   Syntax
 %       [C] = CONTROLLERACTIONS(C1)
@@ -28,8 +28,13 @@ switch nargin
 end
 
 C = C1;
-% 1. Accept pilot requests (Fixed copy-paste bug for vertical_rate_req)
+
+% 1. Accept pilot requests and RESET conflict states
+% BUG FIX: Reset the conflict flag to 0 at the start of every call to prevent 
+% infinite heading increments in subsequent simulation loops.
 for i = 1 : length(C) 
+    C(i).conflict = 0; % Reset conflict status
+    
     if isfield(C, 'heading_req') && ~isempty(C(i).heading_req)
         C(i).ATC_approval = 1;
         C(i).heading_atc = C(i).heading_req;
@@ -84,9 +89,11 @@ for t = 0 : 10/60 : look_ahead_time
         end
     end
     
+    % Apply heading changes based on conflict flags generated in this loop
     for i = 1 : n
-        if isfield(C, 'conflict') && C(i).conflict == 1
-            C(i).heading_atc = C(i).heading + 30;
+        if C(i).conflict == 1
+            % We no longer need isfield(C, 'conflict') because we initialized it above
+            C(i).heading_atc = mod(C(i).heading + 30, 360); % Added mod to keep heading valid
         end
     end
 end
