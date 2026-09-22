@@ -110,9 +110,8 @@ for i = 1 : n
     end
 end
 
-% Compute Flight Level vectorised
-FL = floor(alt / 100);
-FL = floor(FL / 10) * 10;
+% Compute Flight Level
+FL = round((alt / 100) / 10) * 10;
 
 % Identify valid entries (where latitude was found and not 0)
 % Instead of looping backwards, we use logical indexing which is significantly faster.
