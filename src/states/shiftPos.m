@@ -20,5 +20,6 @@ for i = 1 : n
     D(i).latitude = D(i).latitude_mov;
     D(i).longitude = D(i).longitude_mov;
     D(i).flightlevel = D(i).flightlevel_mov;
+    D(i).altitude = D(i).altitude_mov;
 end
 end
