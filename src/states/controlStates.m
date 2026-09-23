@@ -85,7 +85,17 @@ function [D] = controlStates(D, C, varargin)
   
         hdg_update = {C(idx_C).heading};
         fl_update = {C(idx_C).flightlevel};
+        vel_update = {C(idx_C).velocity};
+        vrr_update = {C(idx_C).vertical_rate};
+        
         [D(idx_D).heading] = hdg_update{:};
         [D(idx_D).flightlevel] = fl_update{:};
+        [D(idx_D).velocity] = vel_update{:};
+        [D(idx_D).vertical_rate] = vrr_update{:};
+
+        fl_array = [C(idx_C).flightlevel];
+        alt_update = num2cell(fl_array * 100);
+        [D(idx_D).altitude] = alt_update{:};
+
     end
 end
