@@ -32,7 +32,7 @@ typ      = cell(n, 1);
 
 % Conversion constants
 knots2ms = 0.5144444444;
-ftmin2ms = 0.00508;
+% ftmin2ms = 0.00508; % unnecessary
 
 % Extract data in a loop (Since S is a cell array of structs with variable fields, 
 % a loop is often unavoidable, but we can make it as fast as possible)
@@ -75,9 +75,9 @@ for i = 1 : n
     
     % Vertical rate
     if isfield(curr_S, 'baro_rate')
-        vrr(i) = curr_S.baro_rate * ftmin2ms;
+        vrr(i) = curr_S.baro_rate;
     elseif isfield(curr_S, 'geom_rate')
-        vrr(i) = curr_S.geom_rate * ftmin2ms;
+        vrr(i) = curr_S.geom_rate;
     end
     
     % Callsign
