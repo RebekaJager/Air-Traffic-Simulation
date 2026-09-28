@@ -1,0 +1,56 @@
+%% Sector Configuration Builder
+% Generates realistic ATC operational configurations with Capacity limits.
+% Saves the output to data/sector_configurations.mat
+
+clear; clc;
+
+Configurations = struct('ConfigID', {}, 'Description', {}, 'NumSectors', {}, 'OperationalSectors', {});
+get_elem = @(region, fl_start, fl_end) arrayfun(@(x) sprintf('LHCC%s%d', region, x), fl_start:fl_end, 'UniformOutput', false);
+
+% CONFIG 1: "Bandbox" (Night Shift) - 1 Sector total
+Configurations(1).ConfigID = 1; Configurations(1).Description = 'Night Shift - Bandbox (1 Sector)'; Configurations(1).NumSectors = 1;
+Configurations(1).OperationalSectors(1) = struct('SectorName', 'BUDAPEST ALL', 'Capacity', 18, 'ElementaryIDs', {[get_elem('W', 0, 9), get_elem('S', 0, 9), get_elem('E', 0, 9), get_elem('N', 0, 9)]});
+
+% CONFIG 2: Low Traffic - 2 Sectors total
+Configurations(2).ConfigID = 2; Configurations(2).Description = 'Low Traffic - Split West/East (2 Sectors)'; Configurations(2).NumSectors = 2;
+Configurations(2).OperationalSectors(1) = struct('SectorName', 'WEST-SOUTH', 'Capacity', 15, 'ElementaryIDs', {[get_elem('W', 0, 9), get_elem('S', 0, 9)]});
+Configurations(2).OperationalSectors(2) = struct('SectorName', 'EAST-NORTH', 'Capacity', 15, 'ElementaryIDs', {[get_elem('E', 0, 9), get_elem('N', 0, 9)]});
+
+% CONFIG 3: Medium Traffic (Lateral only) - 4 Sectors total
+Configurations(3).ConfigID = 3; Configurations(3).Description = 'Medium Traffic - 4 Lateral Regions (4 Sectors)'; Configurations(3).NumSectors = 4;
+Configurations(3).OperationalSectors(1) = struct('SectorName', 'WEST ALL', 'Capacity', 15, 'ElementaryIDs', {get_elem('W', 0, 9)});
+Configurations(3).OperationalSectors(2) = struct('SectorName', 'SOUTH ALL', 'Capacity', 15, 'ElementaryIDs', {get_elem('S', 0, 9)});
+Configurations(3).OperationalSectors(3) = struct('SectorName', 'EAST ALL', 'Capacity', 15, 'ElementaryIDs', {get_elem('E', 0, 9)});
+Configurations(3).OperationalSectors(4) = struct('SectorName', 'NORTH ALL', 'Capacity', 15, 'ElementaryIDs', {get_elem('N', 0, 9)});
+
+% CONFIG 4: Medium-High Traffic (Mixed Split) - 5 Sectors total
+Configurations(4).ConfigID = 4; Configurations(4).Description = 'Medium-High Traffic - Mixed (5 Sectors)'; Configurations(4).NumSectors = 5;
+Configurations(4).OperationalSectors(1) = struct('SectorName', 'WEST LOWER', 'Capacity', 13, 'ElementaryIDs', {get_elem('W', 0, 4)});
+Configurations(4).OperationalSectors(2) = struct('SectorName', 'WEST UPPER', 'Capacity', 15, 'ElementaryIDs', {get_elem('W', 5, 9)});
+Configurations(4).OperationalSectors(3) = struct('SectorName', 'EAST LOWER', 'Capacity', 13, 'ElementaryIDs', {get_elem('E', 0, 4)});
+Configurations(4).OperationalSectors(4) = struct('SectorName', 'EAST UPPER', 'Capacity', 15, 'ElementaryIDs', {get_elem('E', 5, 9)});
+Configurations(4).OperationalSectors(5) = struct('SectorName', 'SOUTH-NORTH', 'Capacity', 15, 'ElementaryIDs', {[get_elem('S', 0, 9), get_elem('N', 0, 9)]});
+
+% CONFIG 5: High Traffic (Symmetrical Vertical Split) - 8 Sectors total
+Configurations(5).ConfigID = 5; Configurations(5).Description = 'High Traffic - Symmetrical Vertical Split (8 Sectors)'; Configurations(5).NumSectors = 8;
+reg_codes = {'W', 'S', 'E', 'N'}; reg_names = {'WEST', 'SOUTH', 'EAST', 'NORTH'}; sec_count = 1;
+for r = 1:4
+    Configurations(5).OperationalSectors(sec_count) = struct('SectorName', sprintf('%s LOWER', reg_names{r}), 'Capacity', 12, 'ElementaryIDs', {get_elem(reg_codes{r}, 0, 4)}); sec_count = sec_count + 1;
+    Configurations(5).OperationalSectors(sec_count) = struct('SectorName', sprintf('%s UPPER', reg_names{r}), 'Capacity', 14, 'ElementaryIDs', {get_elem(reg_codes{r}, 5, 9)}); sec_count = sec_count + 1;
+end
+
+% CONFIG 6: Max Capacity (Asymmetrical Multi-Split) - 10 Sectors total
+Configurations(6).ConfigID = 6; Configurations(6).Description = 'Max Capacity - Multi-Split (10 Sectors)'; Configurations(6).NumSectors = 10;
+Configurations(6).OperationalSectors(1) = struct('SectorName', 'WEST LOWER', 'Capacity', 12, 'ElementaryIDs', {get_elem('W', 0, 3)}); 
+Configurations(6).OperationalSectors(2) = struct('SectorName', 'WEST MID', 'Capacity', 13, 'ElementaryIDs', {get_elem('W', 4, 6)});   
+Configurations(6).OperationalSectors(3) = struct('SectorName', 'WEST UPPER', 'Capacity', 15, 'ElementaryIDs', {get_elem('W', 7, 9)}); 
+Configurations(6).OperationalSectors(4) = struct('SectorName', 'EAST LOWER', 'Capacity', 12, 'ElementaryIDs', {get_elem('E', 0, 3)});
+Configurations(6).OperationalSectors(5) = struct('SectorName', 'EAST MID', 'Capacity', 13, 'ElementaryIDs', {get_elem('E', 4, 6)});
+Configurations(6).OperationalSectors(6) = struct('SectorName', 'EAST UPPER', 'Capacity', 15, 'ElementaryIDs', {get_elem('E', 7, 9)});
+Configurations(6).OperationalSectors(7) = struct('SectorName', 'SOUTH LOWER', 'Capacity', 12, 'ElementaryIDs', {get_elem('S', 0, 4)});
+Configurations(6).OperationalSectors(8) = struct('SectorName', 'SOUTH UPPER', 'Capacity', 14, 'ElementaryIDs', {get_elem('S', 5, 9)});
+Configurations(6).OperationalSectors(9) = struct('SectorName', 'NORTH LOWER', 'Capacity', 12, 'ElementaryIDs', {get_elem('N', 0, 4)});
+Configurations(6).OperationalSectors(10) = struct('SectorName', 'NORTH UPPER', 'Capacity', 14, 'ElementaryIDs', {get_elem('N', 5, 9)});
+
+save(fullfile(getenv('PROJECT_ROOT'), 'data', 'sector_configurations.mat'), 'Configurations');
+fprintf('Successfully saved %d configurations.\n', length(Configurations));
