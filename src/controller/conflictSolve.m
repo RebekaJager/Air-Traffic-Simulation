@@ -21,21 +21,24 @@ function C = conflictSolve(CM, C)
 %         instructions (e.g., heading_atc, flightlevel_atc, vertical_rate_atc, 
 %         ATC_approval).
 
-
 if size(CM, 1) ~= size(C, 1)
     error('Dimension mismatch: traffic data is %s, conflict matrix is %s.', ...
        mat2str(size(C)), mat2str(size(CM)))
 end
+
 n = length(C);
 
 % 1. PROCESS REQUESTS OUTSIDE THE CONFLICT PAIR LOOP
 % Prevents running conflictDetect O(n^3) times
 for i = 1 : n
+    if isfield(C, 'is_owned') && ~C(i).is_owned
+        continue;
+    end
     if isfield(C, 'heading_req') && ~isempty(C(i).heading_req)
         C1 = C;
         C1(i).heading = C1(i).heading_req;
         CM1 = conflictDetect(C1, 10);
-        if sum(CM1(i, :)) <= sum(CM(i, :)) % Allow if no NEW conflicts are created
+        if sum(CM1(i, :)) == 0 || sum(CM1(i, :)) < sum(CM(i, :)) % Allow if no NEW conflicts are created
             C(i).ATC_approval = 1;
             C(i).heading_atc = C(i).heading_req;
         end
@@ -44,7 +47,7 @@ for i = 1 : n
         C1 = C;
         C1(i).flightlevel = C1(i).flightlevel_req;
         CM1 = conflictDetect(C1, 10);
-        if sum(CM1(i, :)) <= sum(CM(i, :))
+        if sum(CM1(i, :)) == 0 || sum(CM1(i, :)) < sum(CM(i, :))
             C(i).ATC_approval = 1;
             C(i).flightlevel_atc = C(i).flightlevel_req;
         end
@@ -53,17 +56,16 @@ for i = 1 : n
         C1 = C;
         C1(i).velocity = C1(i).velocity_req;
         CM1 = conflictDetect(C1, 10);
-        if sum(CM1(i, :)) <= sum(CM(i, :))
+        if sum(CM1(i, :)) == 0 || sum(CM1(i, :)) < sum(CM(i, :))
             C(i).ATC_approval = 1;
             C(i).velocity_atc = C(i).velocity_req;
         end
     end
-    % Fixed bug: was checking velocity_req instead of vertical_rate_req
     if isfield(C, 'vertical_rate_req') && ~isempty(C(i).vertical_rate_req) 
         C1 = C;
         C1(i).vertical_rate = C1(i).vertical_rate_req;
         CM1 = conflictDetect(C1, 10);
-        if sum(CM1(i, :)) <= sum(CM(i, :))
+        if sum(CM1(i, :)) == 0 || sum(CM1(i, :)) < sum(CM(i, :))
             C(i).ATC_approval = 1;
             C(i).vertical_rate_atc = C(i).vertical_rate_req;
         end
@@ -73,25 +75,38 @@ end
 % 2. SOLVE CONFLICTS (Using Upper Triangle to avoid double-processing)
 for i = 1 : n
     for j = i+1 : n
+        
         if CM(i, j) == 1 % crossing conflict
-            % check if descending lower aircraft creates new conflict
-            C1 = C;
-            idxs = [i j];
-            [~, idx] = min([C1(i).flightlevel C1(j).flightlevel]);
-            C1(idxs(idx)).flightlevel = C1(idxs(idx)).flightlevel - 20;
-            CM1 = conflictDetect(C1, 5);
-            if (sum(CM1(i, :)) <= sum(CM(i, :))) && (sum(CM1(j, :)) <= sum(CM(j, :)))
-                C(idxs(idx)).flightlevel_atc = C1(idxs(idx)).flightlevel;
-                continue
+            
+            % Döntés a magasságváltásról (az alacsonyabb süllyed, a magasabb emelkedik)
+            if C(i).flightlevel < C(j).flightlevel
+                lower_idx = i;
+                higher_idx = j;
+            else
+                lower_idx = j;
+                higher_idx = i;
             end
             
-            % check if climbing higher aircraft creates new conflict
-            C1 = C;
-            C1(idxs(3 - idx)).flightlevel = C1(idxs(idx)).flightlevel + 20;
-            CM1 = conflictDetect(C1, 5);
-            if (sum(CM1(i, :)) <= sum(CM(i, :))) && (sum(CM1(j, :)) <= sum(CM(j, :)))
-                C(idxs(3 - idx)).flightlevel_atc = C1(idxs(3 - idx)).flightlevel;
-                continue
+            % check if descending lower aircraft creates new conflict (AND we own it)
+            if ~isfield(C, 'is_owned') || C(lower_idx).is_owned
+                C1 = C;
+                C1(lower_idx).flightlevel = C1(lower_idx).flightlevel - 20;
+                CM1 = conflictDetect(C1, 5);
+                if (sum(CM1(i, :)) < sum(CM(i, :))) && (sum(CM1(j, :)) < sum(CM(j, :)))
+                    C(lower_idx).flightlevel_atc = C1(lower_idx).flightlevel;
+                    continue
+                end
+            end
+            
+            % check if climbing higher aircraft creates new conflict (AND we own it)
+            if ~isfield(C, 'is_owned') || C(higher_idx).is_owned
+                C1 = C;
+                C1(higher_idx).flightlevel = C1(higher_idx).flightlevel + 20;
+                CM1 = conflictDetect(C1, 5);
+                if (sum(CM1(i, :)) < sum(CM(i, :))) && (sum(CM1(j, :)) < sum(CM(j, :)))
+                    C(higher_idx).flightlevel_atc = C1(higher_idx).flightlevel;
+                    continue
+                end
             end
             
             % vectoring
@@ -100,12 +115,31 @@ for i = 1 : n
                                             [C(j).latitude C(j).longitude], ...
                                              C(i).velocity, C(j).velocity, ...
                                              C(i).heading, C(j).heading, ...
-                                             5/1.852);
+                                             5*1852); % NM to meters conversion fixed!
             if ~isnan(delta_deg)
-                C(idxs(s.slow_id)).heading_atc = C(idxs(s.slow_id)).heading + s.turn_direction_sign * delta_deg;
+                % Ki fordulhat? (LoA szabály)
+                can_turn_1 = ~isfield(C, 'is_owned') || C(i).is_owned;
+                can_turn_2 = ~isfield(C, 'is_owned') || C(j).is_owned;
+                
+                % Felülbíráljuk a 'slow_id' döntést, ha az egyik gép idegen!
+                if can_turn_1 && ~can_turn_2
+                    s.slow_id = 1; 
+                elseif ~can_turn_1 && can_turn_2
+                    s.slow_id = 2;
+                end
+                
+                % Ha legalább az egyik a miénk, végrehajtjuk
+                if can_turn_1 || can_turn_2
+                    if s.slow_id == 1
+                        target_idx = i;
+                    else
+                        target_idx = j;
+                    end
+                    C(target_idx).heading_atc = C(target_idx).heading + s.turn_direction_sign * delta_deg;
+                end
             end
             
-        elseif CM(i, j) == 2 % Fixed matrix index bug: was CM(i)
+        elseif CM(i, j) == 2 % catching-up conflict
             dec = choose_min_vs_change(...
                 C(i).latitude, C(i).longitude, ...
                 C(i).velocity, C(i).heading, ...
@@ -114,16 +148,20 @@ for i = 1 : n
                 C(j).velocity, C(j).heading, ...
                 C(j).altitude, C(j).vertical_rate);
             
-            idxs = [i, j];
             if dec.which_aircraft == 1
-                C(idxs(dec.which_aircraft)).vertical_rate_atc = dec.new_vs1_fpm;
+                if ~isfield(C, 'is_owned') || C(i).is_owned
+                    C(i).vertical_rate_atc = dec.new_vs1_fpm;
+                end
             elseif dec.which_aircraft == 2
-                C(idxs(dec.which_aircraft)).vertical_rate_atc = dec.new_vs2_fpm;
+                if ~isfield(C, 'is_owned') || C(j).is_owned
+                    C(j).vertical_rate_atc = dec.new_vs2_fpm;
+                end
             end
         end
     end
 end
 end
+
 
 %%
 function [delta_deg, details] = min_heading_change_toward_faster(p1_latlon, p2_latlon, v1, v2, hdg1_deg, hdg2_deg, Dmin_m)
