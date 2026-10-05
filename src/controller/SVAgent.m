@@ -27,6 +27,8 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
 %         containing merged Polyshapes, expanded BufferedShapes, FL limits, 
 %         and capacities.
 
+    persistent Configs ElemSectors current_buffer_time
+
     % Input Parsing
     current_config_id = 0;
     t_sector_decision = 20; % minutes
@@ -42,12 +44,13 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
         t_buffer = varargin{3};
     end
     
-    % Persistent Data Loading & Pre-calculation
-    persistent Configs ElemSectors current_buffer_time
-    
+    % --- Persistent Data Loading & Pre-calculation ---
     if isempty(Configs)
-%        fprintf('SV Agent: Initializing persistent sector geometries...\n');
+        fprintf('SV Agent: Initializing persistent sector geometries...\n');
         projectRoot = getenv('PROJECT_ROOT');
+        if isempty(projectRoot)
+            projectRoot = pwd;
+        end
         cfg = load(fullfile(projectRoot, 'data', 'sector_configurations.mat'));
         elm = load(fullfile(projectRoot, 'data', 'elementary_sectors.mat'));
         
@@ -61,13 +64,21 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
                 idx = ismember({ElemSectors.ID}, elem_ids);
                 match_elem = ElemSectors(idx);
                 
-                % Union lateral shapes
-                merged_shape = match_elem(1).Shape;
+                warning('off', 'MATLAB:polyshape:repairedBySimplify');
+                
+                [lat1, lon1] = extractGeocoords(match_elem(1).Shape);
+                merged_poly = polyshape(lon1, lat1);
+                
                 for e = 2:length(match_elem)
-                    merged_shape = union(merged_shape, match_elem(e).Shape);
+                    [lat_e, lon_e] = extractGeocoords(match_elem(e).Shape);
+                    poly_e = polyshape(lon_e, lat_e);
+                    
+                    merged_poly = union(merged_poly, poly_e);
                 end
                 
-                Configs(c).OperationalSectors(s).MergedShape = merged_shape;
+                warning('on', 'MATLAB:polyshape:repairedBySimplify');
+                
+                Configs(c).OperationalSectors(s).MergedShape = geopolyshape(merged_poly.Vertices(:,2), merged_poly.Vertices(:,1));
                 Configs(c).OperationalSectors(s).LowerFL = min([match_elem.LowerFL]);
                 Configs(c).OperationalSectors(s).UpperFL = max([match_elem.UpperFL]);
             end
@@ -75,8 +86,7 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
     end
     
     % --- Dynamic Buffer Calculation ---
-    % Calculates or updates the buffer zone only if t_buffer has changed (or on first run).
-if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
+    if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
         fprintf('SV Agent: Calculating sector buffers for t_buffer = %d min...\n', t_buffer);
         v_cruise = 450; % average cruise speed in knots
         buffer_nm = v_cruise * (t_buffer / 60); 
@@ -87,31 +97,14 @@ if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
                 merged_shape = Configs(c).OperationalSectors(s).MergedShape;
                 
                 try
-                    % 1. ESÉLY: A legújabb MATLAB-okban (R2024a+) már van dedikált buffer parancs.
                     Configs(c).OperationalSectors(s).BufferedShape = buffer(merged_shape, buffer_deg);
                 catch
-                    % 2. ESÉLY: Régebbi MATLAB-oknál muszáj kibányászni a koordinátákat.
-                    try
-                        % Táblázatos kinyerés (R2022b+)
-                        GT = table(merged_shape, 'VariableNames', {'Shape'});
-                        T = geotable2table(GT, ["Latitude", "Longitude"]);
-                        lat_coords = T.Latitude{1};
-                        lon_coords = T.Longitude{1};
-                    catch
-                        % Rejtett belső paraméter (InternalData) kinyerése (R2021b - R2022a)
-                        lat_coords = merged_shape.InternalData.VertexCoordinate1;
-                        lon_coords = merged_shape.InternalData.VertexCoordinate2;
-                    end
-                    
-                    % Végre megvannak a koordináták! Konvertáljuk síkbeli (X-Y) polyshape-pé
-                    % Figyelem: A polyshape(X, Y) formátumot vár, ezért X = Lon, Y = Lat
+                    warning('off', 'MATLAB:polyshape:repairedBySimplify');
+                    [lat_coords, lon_coords] = extractGeocoords(merged_shape);
                     temp_poly = polyshape(lon_coords, lat_coords);
-                    
-                    % Itt már gond nélkül lefut a sima polybuffer
                     temp_buffered = polybuffer(temp_poly, buffer_deg);
-                    
-                    % Csomagoljuk vissza geopolyshape formátumba
                     Configs(c).OperationalSectors(s).BufferedShape = geopolyshape(temp_buffered.Vertices(:,2), temp_buffered.Vertices(:,1));
+                    warning('on', 'MATLAB:polyshape:repairedBySimplify');
                 end
             end
         end
@@ -119,9 +112,8 @@ if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
     end
     
     % --- Traffic Projection ---
-    % Always recalculate to ensure projection perfectly matches t_sector_decision
     if isempty(D)
-        active_config_id = 1; % Default to minimum if airspace is empty
+        active_config_id = 1; 
         ActiveSectors = Configs(1).OperationalSectors;
         return;
     end
@@ -130,6 +122,9 @@ if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
     % --- Configuration Evaluation ---
     config_stats = struct('ConfigID', {}, 'MaxUtilization', {}, 'NumSectors', {}, 'IsValid', {});
     
+
+    overload_tolerance = 1.15; 
+    
     for c = 1:length(Configs)
         is_valid = true;
         max_util = 0;
@@ -137,8 +132,6 @@ if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
         for s = 1:length(Configs(c).OperationalSectors)
             op_sec = Configs(c).OperationalSectors(s);
             
-            % 1. Vertical filtering (Fast)
-            % Strict check: A/C must be >= LowerFL and < UpperFL
             idx_vert = [D_proj.flightlevel_mov] >= op_sec.LowerFL & [D_proj.flightlevel_mov] < op_sec.UpperFL;
             D_vert = D_proj(idx_vert);
             
@@ -146,21 +139,19 @@ if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
                 continue;
             end
             
-            % 2. Lateral filtering (Slower)
             pts = geopointshape([D_vert.latitude_mov], [D_vert.longitude_mov]);
             in_lateral = isinterior(op_sec.MergedShape, pts);
             
-            % 3. Capacity Check
             count = sum(in_lateral);
-            util = count / op_sec.Capacity;
             
+            util = count / op_sec.Capacity;
             if util > max_util
                 max_util = util;
             end
             
-            if count > op_sec.Capacity
+            if count > (op_sec.Capacity * overload_tolerance)
                 is_valid = false;
-                break; % Optimization: stop checking sectors if one is already overloaded
+                break; 
             end
         end
         
@@ -171,41 +162,34 @@ if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
     end
     
     % --- Decision Logic (Hysteresis) ---
-    % Find all valid configurations (no sector exceeds capacity)
     valid_idx = [config_stats.IsValid] == true;
     valid_configs = config_stats(valid_idx);
     
-    % Sort valid configurations by number of sectors (ascending)
     [~, sort_idx] = sort([valid_configs.NumSectors]);
     valid_configs = valid_configs(sort_idx);
     
     if isempty(valid_configs)
-        % Extreme Traffic: Even max configuration is overloaded. Pick max.
         fprintf('SV WARNING: All configurations overloaded! Defaulting to Max Capacity.\n');
         active_config_id = Configs(end).ConfigID;
         ActiveSectors = Configs(end).OperationalSectors;
         return;
     end
     
-    % If current configuration is not set, pick the smallest valid one
     if current_config_id == 0
         active_config_id = valid_configs(1).ConfigID;
         ActiveSectors = Configs(active_config_id).OperationalSectors;
         return;
     end
     
-    % Check current configuration status
     curr_idx = find([config_stats.ConfigID] == current_config_id);
     
     if config_stats(curr_idx).IsValid
-        % Current config is handling the traffic fine. Can we DOWNGRADE safely?
-        % Hysteresis: Only downgrade if the smaller config will be < 75% utilized
         downgrade_candidate = 0;
         for i = 1:length(valid_configs)
             if valid_configs(i).NumSectors < config_stats(curr_idx).NumSectors
-                if valid_configs(i).MaxUtilization < 0.75
+                if valid_configs(i).MaxUtilization < 0.95
                     downgrade_candidate = valid_configs(i).ConfigID;
-                    break; % Found the smallest safe config
+                    break; 
                 end
             end
         end
@@ -213,14 +197,24 @@ if isempty(current_buffer_time) || current_buffer_time ~= t_buffer
         if downgrade_candidate > 0
             active_config_id = downgrade_candidate;
         else
-            active_config_id = current_config_id; % Keep current
+            active_config_id = current_config_id; 
         end
     else
-        % Current config is OVERLOADED. UPGRADE needed.
-        % Pick the smallest valid configuration available.
         active_config_id = valid_configs(1).ConfigID;
     end
     
-    % Output the operational sectors for the chosen config
     ActiveSectors = Configs(active_config_id).OperationalSectors;
+end
+
+% --- HELPER FUNCTION ---
+function [lat, lon] = extractGeocoords(gshape)
+    try
+        GT = table(gshape, 'VariableNames', {'Shape'});
+        T = geotable2table(GT, ["Latitude", "Longitude"]);
+        lat = T.Latitude{1};
+        lon = T.Longitude{1};
+    catch
+        lat = gshape.InternalData.VertexCoordinate1;
+        lon = gshape.InternalData.VertexCoordinate2;
+    end
 end
