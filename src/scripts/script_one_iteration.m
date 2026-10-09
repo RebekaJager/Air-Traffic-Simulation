@@ -2,6 +2,8 @@
 % ADSBexchange v2 documentation:
 % https://www.adsbexchange.com/version-2-api-wip/ 
 
+clearvars;
+clc;
 t = 20;
 [lat, lon, d, bordershp, ~] = areaCalc('HU', t);
 
@@ -24,13 +26,13 @@ D = estimatePos(D, 5);
 D2 = D([D(:).inside] == 1);
 
 %% Visualize
-v = stateMapping_simple(D2, 1);
+%v = stateMapping_simple(D2, 1);
 
 %% Control
 C1 = generateRequests(D2); % kérés típus mező kérdése
 %C = controllerActions(C1); % A simple controller algorithm
-CM = conflictDetect(C1, 5);
-C = conflictSolve(CM, C1);
+[current_config_id, ActiveSectors] = SVAgent(D2, 0, 20);
+C = SectorManager(C1, ActiveSectors);
 D = controlStates(D, C);
 D = estimatePos(D, 0.5); % Account for time during ATC instruction exchange and perfrmance
 D = shiftPos(D);

@@ -52,6 +52,9 @@ Vy = v .* cos(hdg_rad);
 
 for i = 1 : n
     for j = i+1 : n
+        if isfield(D, 'is_owned') && ~D(i).is_owned && ~D(j).is_owned
+            continue;
+        end
         % Vector math inline for maximum speed
         dp = [X(i) - X(j), Y(i) - Y(j)];
         dv = [Vx(i) - Vx(j), Vy(i) - Vy(j)];
@@ -66,20 +69,27 @@ for i = 1 : n
             end
         end
         
-        d_min = norm(dp + dv * t_min) / 1852;
+d_min = norm(dp + dv * t_min) / 1852;
         t_min_min = t_min / 60;
         
         if d_min < 5 && t_min_min < look_ahead_time
-            if D(i).flightlevel == D(j).flightlevel 
-                CM(i, j) = 1;
-            elseif abs(D(i).flightlevel - D(j).flightlevel) == 10
-                idxs = [i j];
-                [~, idx] = min([D(i).flightlevel D(j).flightlevel]);
-                if D(idxs(idx)).vertical_rate > 0 || D(idxs(3 - idx)).vertical_rate < 0      
+            % Projected altitude at CPA (after t_min_min minutes) 
+            alt_i_cpa = D(i).altitude + D(i).vertical_rate * t_min_min;
+            alt_j_cpa = D(j).altitude + D(j).vertical_rate * t_min_min;
+            vert_sep_cpa = abs(alt_i_cpa - alt_j_cpa);
+            
+            % vertical direction
+            if vert_sep_cpa < 1000
+                % Type 1 (same level conflict)
+                if abs(D(i).vertical_rate) < 200 && abs(D(j).vertical_rate) < 200
+                    CM(i, j) = 1;
+                else
+                    % Type 2 (at least one aircraft is changing level)
                     CM(i, j) = 2;
                 end
+                
             elseif isfield(D, 'flightlevel_req')
-                % Safely extract requests, avoiding crashes on empty [] arrays
+                % TYPE 3 (validating pilot request)
                 req_i = D(i).flightlevel;
                 if ~isempty(D(i).flightlevel_req) && D(i).flightlevel_req ~= 0
                     req_i = D(i).flightlevel_req;
@@ -90,12 +100,12 @@ for i = 1 : n
                     req_j = D(j).flightlevel_req;
                 end
                 
-                % Check if either aircraft has an active request forcing a level cross
+                % conflict, if proposed altitudes are under 1000 ft
+                % separation
                 if req_i ~= D(i).flightlevel || req_j ~= D(j).flightlevel
-                    if ((D(i).flightlevel > D(j).flightlevel) && (req_i < D(i).flightlevel)) || ... 
-                       ((D(i).flightlevel < D(j).flightlevel) && (req_i > D(j).flightlevel)) || ...
-                       ((D(j).flightlevel > D(i).flightlevel) && (req_j < D(j).flightlevel)) || ...
-                       ((D(j).flightlevel < D(i).flightlevel) && (req_j > D(i).flightlevel))
+                    req_alt_i = req_i * 100; % multiplication for converting barometric altitude
+                    req_alt_j = req_j * 100;
+                    if abs(req_alt_i - req_alt_j) < 1000
                         CM(i, j) = 3;
                     end
                 end
