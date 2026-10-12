@@ -1,56 +1,96 @@
-%% Sector Configuration Builder
-% Generates realistic ATC operational configurations with Capacity limits.
-% Saves the output to data/sector_configurations.mat
+%% Sector Configuration Builder (Synthetic Open-Source Version)
+% Procedurally generates realistic, contiguous ATC sector configurations 
+% with randomized sustained and peak capacity limits for demonstration.
+% Saves output to data/sector_configurations.mat
 
 clear; clc;
+rng(42); % Fixed seed for reproducible synthetic generation
 
 Configurations = struct('ConfigID', {}, 'Description', {}, 'NumSectors', {}, 'OperationalSectors', {});
-get_elem = @(region, fl_start, fl_end) arrayfun(@(x) sprintf('LHCC%s%d', region, x), fl_start:fl_end, 'UniformOutput', false);
 
-% CONFIG 1: "Bandbox" (Night Shift) - 1 Sector total
-Configurations(1).ConfigID = 1; Configurations(1).Description = 'Night Shift - Bandbox (1 Sector)'; Configurations(1).NumSectors = 1;
-Configurations(1).OperationalSectors(1) = struct('SectorName', 'BUDAPEST ALL', 'Capacity', 18, 'ElementaryIDs', {[get_elem('W', 0, 9), get_elem('S', 0, 9), get_elem('E', 0, 9), get_elem('N', 0, 9)]});
+% Define valid lateral region groupings (contiguous regions)
+lateral_schemes = {
+    {{'W', 'S', 'E', 'N'}}, ...             % 1 lateral block (Bandbox)
+    {{'W', 'S'}, {'E', 'N'}}, ...           % 2 lateral blocks
+    {{'W'}, {'S'}, {'E', 'N'}}, ...         % 3 lateral blocks
+    {{'W'}, {'S'}, {'E'}, {'N'}}            % 4 lateral blocks
+    };
 
-% CONFIG 2: Low Traffic - 2 Sectors total
-Configurations(2).ConfigID = 2; Configurations(2).Description = 'Low Traffic - Split West/East (2 Sectors)'; Configurations(2).NumSectors = 2;
-Configurations(2).OperationalSectors(1) = struct('SectorName', 'WEST-SOUTH', 'Capacity', 15, 'ElementaryIDs', {[get_elem('W', 0, 9), get_elem('S', 0, 9)]});
-Configurations(2).OperationalSectors(2) = struct('SectorName', 'EAST-NORTH', 'Capacity', 15, 'ElementaryIDs', {[get_elem('E', 0, 9), get_elem('N', 0, 9)]});
+% Blueprints: [lateral_scheme_index, vertical_splits_per_block]
+blueprints = [
+    1, 1;  % 1 sector
+    2, 1;  % 2 sectors (lateral)
+    1, 2;  % 2 sectors (vertical variant A)
+    1, 2;  % 2 sectors (vertical variant B)
+    2, 2;  % 4 sectors (variant A)
+    2, 2;  % 4 sectors (variant B)
+    4, 1;  % 4 sectors (lateral only)
+    3, 2;  % 6 sectors
+    2, 3;  % 6 sectors (3 vertical layers)
+    4, 2;  % 8 sectors (variant A)
+    4, 2;  % 8 sectors (variant B)
+    3, 3;  % 9 sectors
+    4, 3;  % 12 sectors
+    4, 4   % 16 sectors
+    ];
 
-% CONFIG 3: Medium Traffic (Lateral only) - 4 Sectors total
-Configurations(3).ConfigID = 3; Configurations(3).Description = 'Medium Traffic - 4 Lateral Regions (4 Sectors)'; Configurations(3).NumSectors = 4;
-Configurations(3).OperationalSectors(1) = struct('SectorName', 'WEST ALL', 'Capacity', 15, 'ElementaryIDs', {get_elem('W', 0, 9)});
-Configurations(3).OperationalSectors(2) = struct('SectorName', 'SOUTH ALL', 'Capacity', 15, 'ElementaryIDs', {get_elem('S', 0, 9)});
-Configurations(3).OperationalSectors(3) = struct('SectorName', 'EAST ALL', 'Capacity', 15, 'ElementaryIDs', {get_elem('E', 0, 9)});
-Configurations(3).OperationalSectors(4) = struct('SectorName', 'NORTH ALL', 'Capacity', 15, 'ElementaryIDs', {get_elem('N', 0, 9)});
+num_configs = size(blueprints, 1);
 
-% CONFIG 4: Medium-High Traffic (Mixed Split) - 5 Sectors total
-Configurations(4).ConfigID = 4; Configurations(4).Description = 'Medium-High Traffic - Mixed (5 Sectors)'; Configurations(4).NumSectors = 5;
-Configurations(4).OperationalSectors(1) = struct('SectorName', 'WEST LOWER', 'Capacity', 13, 'ElementaryIDs', {get_elem('W', 0, 4)});
-Configurations(4).OperationalSectors(2) = struct('SectorName', 'WEST UPPER', 'Capacity', 15, 'ElementaryIDs', {get_elem('W', 5, 9)});
-Configurations(4).OperationalSectors(3) = struct('SectorName', 'EAST LOWER', 'Capacity', 13, 'ElementaryIDs', {get_elem('E', 0, 4)});
-Configurations(4).OperationalSectors(4) = struct('SectorName', 'EAST UPPER', 'Capacity', 15, 'ElementaryIDs', {get_elem('E', 5, 9)});
-Configurations(4).OperationalSectors(5) = struct('SectorName', 'SOUTH-NORTH', 'Capacity', 15, 'ElementaryIDs', {[get_elem('S', 0, 9), get_elem('N', 0, 9)]});
+for c = 1:num_configs
+    scheme_idx = blueprints(c, 1);
+    v_splits   = blueprints(c, 2);
+    lat_groups = lateral_schemes{scheme_idx};
 
-% CONFIG 5: High Traffic (Symmetrical Vertical Split) - 8 Sectors total
-Configurations(5).ConfigID = 5; Configurations(5).Description = 'High Traffic - Symmetrical Vertical Split (8 Sectors)'; Configurations(5).NumSectors = 8;
-reg_codes = {'W', 'S', 'E', 'N'}; reg_names = {'WEST', 'SOUTH', 'EAST', 'NORTH'}; sec_count = 1;
-for r = 1:4
-    Configurations(5).OperationalSectors(sec_count) = struct('SectorName', sprintf('%s LOWER', reg_names{r}), 'Capacity', 12, 'ElementaryIDs', {get_elem(reg_codes{r}, 0, 4)}); sec_count = sec_count + 1;
-    Configurations(5).OperationalSectors(sec_count) = struct('SectorName', sprintf('%s UPPER', reg_names{r}), 'Capacity', 14, 'ElementaryIDs', {get_elem(reg_codes{r}, 5, 9)}); sec_count = sec_count + 1;
+    op_sectors = struct('SectorName', {}, 'Capacity', {}, 'Capacity_peak', {}, 'ElementaryIDs', {});
+    sec_count = 0;
+
+    for g = 1:length(lat_groups)
+        regs = lat_groups{g};
+        reg_name = [regs{:}];
+
+        % Generate random contiguous vertical slices across layers 0..9
+        if v_splits == 1
+            layer_bounds = [0, 10];
+        else
+            % Pick random internal split points between layer 1 and 9
+            split_pts = sort(randperm(8, v_splits - 1));
+            layer_bounds = [0, split_pts, 10];
+        end
+
+        for v = 1:v_splits
+            fl_start = layer_bounds(v);
+            fl_end   = layer_bounds(v+1) - 1;
+
+            % Collect elementary sector IDs for this 3D block
+            elem_ids = {};
+            for r = 1:length(regs)
+                for fl = fl_start:fl_end
+                    elem_ids{end+1} = sprintf('LHCC%s%d', regs{r}, fl); %#ok<SAGROW>
+                end
+            end
+
+            % Generate realistic random capacities
+            base_cap = randi([8, 15]);
+            peak_cap = base_cap + randi([2, 6]);
+
+            sec_count = sec_count + 1;
+            op_sectors(sec_count).SectorName    = sprintf('SYN_%s_%d_%d', reg_name, fl_start, fl_end);
+            op_sectors(sec_count).Capacity      = base_cap;
+            op_sectors(sec_count).Capacity_peak = peak_cap;
+            op_sectors(sec_count).ElementaryIDs = elem_ids;
+        end
+    end
+
+    Configurations(c).ConfigID           = c;
+    Configurations(c).Description        = sprintf('Synthetic Config %d (%d Sectors)', c, sec_count);
+    Configurations(c).NumSectors         = sec_count;
+    Configurations(c).OperationalSectors = op_sectors;
 end
 
-% CONFIG 6: Max Capacity (Asymmetrical Multi-Split) - 10 Sectors total
-Configurations(6).ConfigID = 6; Configurations(6).Description = 'Max Capacity - Multi-Split (10 Sectors)'; Configurations(6).NumSectors = 10;
-Configurations(6).OperationalSectors(1) = struct('SectorName', 'WEST LOWER', 'Capacity', 12, 'ElementaryIDs', {get_elem('W', 0, 3)}); 
-Configurations(6).OperationalSectors(2) = struct('SectorName', 'WEST MID', 'Capacity', 13, 'ElementaryIDs', {get_elem('W', 4, 6)});   
-Configurations(6).OperationalSectors(3) = struct('SectorName', 'WEST UPPER', 'Capacity', 15, 'ElementaryIDs', {get_elem('W', 7, 9)}); 
-Configurations(6).OperationalSectors(4) = struct('SectorName', 'EAST LOWER', 'Capacity', 12, 'ElementaryIDs', {get_elem('E', 0, 3)});
-Configurations(6).OperationalSectors(5) = struct('SectorName', 'EAST MID', 'Capacity', 13, 'ElementaryIDs', {get_elem('E', 4, 6)});
-Configurations(6).OperationalSectors(6) = struct('SectorName', 'EAST UPPER', 'Capacity', 15, 'ElementaryIDs', {get_elem('E', 7, 9)});
-Configurations(6).OperationalSectors(7) = struct('SectorName', 'SOUTH LOWER', 'Capacity', 12, 'ElementaryIDs', {get_elem('S', 0, 4)});
-Configurations(6).OperationalSectors(8) = struct('SectorName', 'SOUTH UPPER', 'Capacity', 14, 'ElementaryIDs', {get_elem('S', 5, 9)});
-Configurations(6).OperationalSectors(9) = struct('SectorName', 'NORTH LOWER', 'Capacity', 12, 'ElementaryIDs', {get_elem('N', 0, 4)});
-Configurations(6).OperationalSectors(10) = struct('SectorName', 'NORTH UPPER', 'Capacity', 14, 'ElementaryIDs', {get_elem('N', 5, 9)});
+projectRoot = getenv('PROJECT_ROOT');
+if isempty(projectRoot)
+    projectRoot = pwd;
+end
 
-save(fullfile(getenv('PROJECT_ROOT'), 'data', 'sector_configurations.mat'), 'Configurations');
-fprintf('Successfully saved %d configurations.\n', length(Configurations));
+save(fullfile(projectRoot, 'data', 'sector_configurations.mat'), 'Configurations');
+fprintf('Successfully generated and saved %d synthetic configurations.\n', length(Configurations));
