@@ -28,7 +28,7 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
 %         and capacities.
 
     persistent Configs ElemSectors current_buffer_time
-
+    
     % Input Parsing
     current_config_id = 0;
     t_sector_decision = 20; % minutes
@@ -121,40 +121,32 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
     
     % --- Configuration Evaluation ---
     config_stats = struct('ConfigID', {}, 'MaxUtilization', {}, 'NumSectors', {}, 'IsValid', {});
-    
-
-    overload_tolerance = 1.15; 
-    
     for c = 1:length(Configs)
         is_valid = true;
         max_util = 0;
-        
         for s = 1:length(Configs(c).OperationalSectors)
             op_sec = Configs(c).OperationalSectors(s);
-            
             idx_vert = [D_proj.flightlevel_mov] >= op_sec.LowerFL & [D_proj.flightlevel_mov] < op_sec.UpperFL;
             D_vert = D_proj(idx_vert);
-            
             if isempty(D_vert)
                 continue;
             end
-            
             pts = geopointshape([D_vert.latitude_mov], [D_vert.longitude_mov]);
             in_lateral = isinterior(op_sec.MergedShape, pts);
-            
             count = sum(in_lateral);
             
+            % Utilization is based on Sustained Capacity
             util = count / op_sec.Capacity;
             if util > max_util
                 max_util = util;
             end
             
-            if count > (op_sec.Capacity * overload_tolerance)
+            % Hard limit check based on Peak Capacity
+            if count > op_sec.Capacity_peak
                 is_valid = false;
                 break; 
             end
         end
-        
         config_stats(c).ConfigID = Configs(c).ConfigID;
         config_stats(c).MaxUtilization = max_util;
         config_stats(c).NumSectors = Configs(c).NumSectors;
@@ -165,8 +157,12 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
     valid_idx = [config_stats.IsValid] == true;
     valid_configs = config_stats(valid_idx);
     
-    [~, sort_idx] = sort([valid_configs.NumSectors]);
-    valid_configs = valid_configs(sort_idx);
+    if ~isempty(valid_configs)
+        T_sort = struct2table(valid_configs);
+        T_sort = sortrows(T_sort, {'NumSectors', 'MaxUtilization'});
+        valid_configs = table2struct(T_sort);
+        valid_configs = valid_configs(:)'; 
+    end
     
     if isempty(valid_configs)
         fprintf('SV WARNING: All configurations overloaded! Defaulting to Max Capacity.\n');
@@ -193,7 +189,6 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
                 end
             end
         end
-        
         if downgrade_candidate > 0
             active_config_id = downgrade_candidate;
         else
