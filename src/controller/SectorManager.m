@@ -1,4 +1,4 @@
-function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors)
+function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors, params)
 % SECTORMANAGER - Distributes traffic among active sectors and applies ATC logic.
 %   Acts as the executive layer below the SV Agent. It filters the global
 %   traffic into localized sector traffic, calls the conflict detection and
@@ -8,6 +8,7 @@ function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors
 %   Syntax
 %       [C_out] = SECTORMANAGER(C_in, ActiveSectors)
 %       [C_out, WorkloadLog] = SECTORMANAGER(C_in, ActiveSectors, enable_errors)
+%       [C_out, WorkloadLog] = SECTORMANAGER(C_in, ActiveSectors, enable_errors, params)
 %
 %   Input Arguments
 %      * C_in as struct, structure of the global traffic data, typically
@@ -16,6 +17,10 @@ function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors
 %         by the SVAgent (containing MergedShape, LowerFL, UpperFL).
 %      * enable_errors as boolean for enabling human error in controller
 %         instructions
+%      * params as struct, error model parameters (see DEFAULTERRORPARAMS).
+%         Optional; defaults are used if omitted. Individual differences
+%         (m_P, m_W) are tied to the sector (controller position) and are
+%         reproducible from params.seed.
 %
 %   Output Arguments
 %      * C_out as struct, structure of global traffic data appended with
@@ -23,6 +28,11 @@ function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors
 
     if nargin < 3
         enable_errors = false; % Default: no error (for baseline run)
+    end
+    if nargin < 4 || isempty(params)
+        params = defaultErrorParams();
+    else
+        params = defaultErrorParams(params);   % fill in missing fields
     end
     
     WorkloadLog = struct('SectorName', {}, 'Workload', {});
@@ -67,7 +77,7 @@ function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors
             
             % calculate workload
             sector_name = sec.SectorName;
-            [~, W_smooth] = calculateWorkload(D_sec, sector_name);
+            [~, W_smooth] = calculateWorkload(D_sec, sector_name, params);
             
             % record for output
             WorkloadLog(end+1).SectorName = sector_name;
@@ -79,20 +89,16 @@ function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors
             
             % apply error rate
             if enable_errors
-                err_params.P_base = 0.001; 
-                err_params.P_max  = 0.15;  
-                err_params.k      = 0.5;   
-                err_params.W_crit = 30;    
-                err_params.A_u    = 0.05;  
-                err_params.tau    = 10;    
-                dyn_error = calculateErrorRate(W_smooth, err_params);
-                dyn_wrongness = 20; % 20% distortion in value
+                % individual traits of the controller working this sector
+                traits = getControllerTraits(sector_name, params);
+                % error probability per instruction, in [0,1]
+                dyn_error = errorProbability(W_smooth, params, traits);
                 
                 % apply error ONLY to owned aircraft
                 for i = 1:length(C_sec_solved)
-                    if C_sec_solved(i).is_owned && rand() < (dyn_error / 100)
+                    if C_sec_solved(i).is_owned && rand() < dyn_error
                         
-                        error_mult = (1 + (dyn_wrongness / 100) * (2 * rand() - 1));
+                        error_mult = (1 + params.M_error * (2 * rand() - 1));
                         
                         if isfield(C_sec_solved, 'heading_atc') && ~isempty(C_sec_solved(i).heading_atc)
                             C_sec_solved(i).heading_atc = C_sec_solved(i).heading_atc * error_mult;
@@ -144,4 +150,29 @@ function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors
             
         end
     end
+end
+
+
+function traits = getControllerTraits(sector_name, params)
+% GETCONTROLLERTRAITS - Individual multipliers of the controller at a sector.
+%   m_P ~ Lognormal(0, sigma_P), m_W ~ Lognormal(0, sigma_W), median = 1.
+%   The draw depends only on (params.seed, sector_name), so a controller
+%   keeps the same traits for the whole run and across parameter sweeps
+%   (common random numbers), and the global rand() stream is not consumed.
+    persistent cache
+    if isempty(cache)
+        cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    end
+    key = sprintf('%d|%g|%g|%s', params.seed, params.sigma_P, params.sigma_W, sector_name);
+    if isKey(cache, key)
+        traits = cache(key);
+        return;
+    end
+    name_code = sum(double(sector_name) .* (1:numel(sector_name)));
+    s = mod(params.seed * 1000003 + name_code, 2^32 - 1);
+    stream = RandStream('mt19937ar', 'Seed', s);
+    z = randn(stream, 1, 2);
+    traits.m_P = exp(params.sigma_P * z(1));
+    traits.m_W = exp(params.sigma_W * z(2));
+    cache(key) = traits;
 end
