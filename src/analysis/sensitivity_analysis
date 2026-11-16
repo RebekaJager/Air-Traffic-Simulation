@@ -1,0 +1,308 @@
+function sensitivity_analysis()
+%% sensitivity_analysis.m
+% One-at-a-time sensitivity analysis of the controller error model.
+%
+% Runs src/scripts/simulation.m many times, changing parameters through the
+% override mechanism of defaultErrorParams (the file itself is never edited),
+% and saves the workspace of every run to results/sensitivity_analysis/.
+% The runs are independent, so they are executed in parallel (parfor).
+%
+% Stage A  Calibration: error-free runs; W_crit = 90th percentile of the
+%          smoothed workload of all sectors and steps. One run for the
+%          baseline tau_mem and one for every other tau_mem value, so that
+%          W_crit is recalibrated for every tau_mem (they are not independent).
+% Stage B  Error runs (nRep replications, same seeds in every setting):
+%          baseline; one-at-a-time sweeps; tau_mem together with its W_crit;
+%          A_u x tau_u grid (they are not independent) plus A_u = 0.
+%          The task order is replication-major: replication 1 of ALL settings
+%          is finished before replication 2 starts, so the analysis can be
+%          stopped at any time with complete replication sets, and nRep can be
+%          increased later (only the new replications are run).
+%
+% File names:  sensitivity_<tag>_rep<r>.mat   (tag contains the parameter name)
+%              calibration_<tag>.mat           (error-free calibration runs)
+%              summary.csv / summary.mat       (KPIs of all runs)
+%
+% Usage: call  sensitivity_analysis  from the command window. Existing files
+% are skipped (resume). sa_cfg.dry_run = true lists the plan without running.
+
+%% ---------------- Configuration ----------------------------------------
+sa_cfg.nRep              = 5;      % replications per setting (different seeds)
+sa_cfg.seeds             = 1:sa_cfg.nRep;   % same seeds in every setting (common random numbers)
+sa_cfg.n_workers         = 4;      % parallel workers (0 = no pool / serial); mind the RAM
+sa_cfg.skip_existing     = true;   % resume: skip runs whose .mat file exists
+sa_cfg.dry_run           = false;  % true: only print the plan
+sa_cfg.W_crit_fixed      = [];     % [] = calibrate; a number forces W_crit for all non-tau runs
+sa_cfg.recalibrate_omega = false;  % true: also recalibrate W_crit for each omega value
+
+% One-at-a-time sweeps {parameter, values} (baseline values are skipped
+% automatically because the baseline runs already cover them)
+sa_oat = { ...
+    'omega_2', [1 2 3]; ...
+    'omega_3', [2 4 6]; ...
+    'omega_4', [1 2 3 4]; ...
+    'P_base',  [1e-3 3e-3 1e-2]; ...
+    'P_max',   [0.3 0.4 0.5]; ...
+    'f',       [0.1 0.3 0.5]; ...
+    'M_error', [0.1 0.2 0.3] };
+
+sa_tau_mem_values = [0 2.5 5 10 15];   % [min], W_crit recalibrated for each
+sa_A_u_values     = [0.01 0.05 0.1];   % grid, together with
+sa_tau_u_values   = [5 10 20];         % ... these (A_u = 0 is added separately)
+
+%% ---------------- Setup -------------------------------------------------
+if isempty(getenv('PROJECT_ROOT')) || isempty(which('defaultErrorParams')) || isempty(which('simulation'))
+    init;   % sets PROJECT_ROOT and the path
+end
+sa_root = getenv('PROJECT_ROOT');
+sa_outdir = fullfile(sa_root, 'results', 'sensitivity_analysis');
+if ~isfolder(sa_outdir), mkdir(sa_outdir); end
+
+defaultErrorParams('reset');
+sa_base = defaultErrorParams();     % baseline parameters
+sa_cfg.outdir = sa_outdir;
+sa_cfg.root   = sa_root;
+sa_cfg.base   = sa_base;
+
+%% ---------------- Stage A: calibration runs (error-free) ----------------
+sa_calib = {};   % each entry: {tag, overrides}
+if isempty(sa_cfg.W_crit_fixed)
+    sa_calib{end+1} = {['tau_mem_' sa_fmt(sa_base.tau_mem)], {'tau_mem', sa_base.tau_mem}};
+end
+for sa_tau = sa_tau_mem_values
+    if sa_is_base(sa_base, 'tau_mem', sa_tau), continue; end
+    sa_calib{end+1} = {['tau_mem_' sa_fmt(sa_tau)], {'tau_mem', sa_tau}}; %#ok<AGROW>
+end
+if sa_cfg.recalibrate_omega
+    for sa_i = 1:size(sa_oat, 1)
+        if ~strncmp(sa_oat{sa_i, 1}, 'omega', 5), continue; end
+        for sa_v = sa_oat{sa_i, 2}
+            if sa_is_base(sa_base, sa_oat{sa_i, 1}, sa_v), continue; end
+            sa_calib{end+1} = {sprintf('%s_%s', sa_oat{sa_i, 1}, sa_fmt(sa_v)), ...
+                               {sa_oat{sa_i, 1}, sa_v}}; %#ok<AGROW>
+        end
+    end
+end
+
+sa_tasks = cell(1, numel(sa_calib));
+for sa_k = 1:numel(sa_calib)
+    sa_tasks{sa_k} = struct('kind', 'calib', ...
+        'file', fullfile(sa_outdir, sprintf('calibration_%s.mat', sa_calib{sa_k}{1})), ...
+        'tag', sa_calib{sa_k}{1}, 'parameter', 'calibration', 'rep', 0, ...
+        'overrides', {sa_calib{sa_k}{2}}, 'seed', 0);
+end
+sa_run_tasks(sa_tasks, sa_cfg);
+
+% read the calibrated W_crit values
+sa_Wc = struct();
+for sa_k = 1:numel(sa_calib)
+    sa_Wc.(sa_calib{sa_k}{1}) = sa_read_wcrit(sa_tasks{sa_k}.file);
+end
+if isempty(sa_cfg.W_crit_fixed)
+    sa_Wc_base = sa_Wc.(['tau_mem_' sa_fmt(sa_base.tau_mem)]);
+else
+    sa_Wc_base = sa_cfg.W_crit_fixed;
+end
+fprintf('Baseline W_crit = %.2f (tau_mem = %g min)\n', sa_Wc_base, sa_base.tau_mem);
+
+%% ---------------- Stage B: settings -------------------------------------
+sa_set = {};     % each entry: {tag, parameter, overrides}
+sa_set{end+1} = {'baseline', 'baseline', {'W_crit', sa_Wc_base}};
+
+% one-at-a-time sweeps
+for sa_i = 1:size(sa_oat, 1)
+    sa_name = sa_oat{sa_i, 1};
+    for sa_v = sa_oat{sa_i, 2}
+        if sa_is_base(sa_base, sa_name, sa_v), continue; end
+        sa_w = sa_Wc_base;
+        sa_tag = sprintf('%s_%s', sa_name, sa_fmt(sa_v));
+        if sa_cfg.recalibrate_omega && strncmp(sa_name, 'omega', 5)
+            sa_w = sa_Wc.(sa_tag);
+        end
+        sa_set{end+1} = {sa_tag, sa_name, {sa_name, sa_v, 'W_crit', sa_w}}; %#ok<AGROW>
+    end
+end
+
+% tau_mem together with its recalibrated W_crit
+for sa_tau = sa_tau_mem_values
+    if sa_is_base(sa_base, 'tau_mem', sa_tau), continue; end
+    sa_w = sa_Wc.(['tau_mem_' sa_fmt(sa_tau)]);
+    sa_tag = sprintf('tau_mem-W_crit_tau%s_Wcrit%s', sa_fmt(sa_tau), sa_fmt(round(sa_w * 10) / 10));
+    sa_set{end+1} = {sa_tag, 'tau_mem+W_crit', {'tau_mem', sa_tau, 'W_crit', sa_w}}; %#ok<AGROW>
+end
+
+% A_u x tau_u grid (+ A_u = 0)
+for sa_A = sa_A_u_values
+    for sa_T = sa_tau_u_values
+        if sa_is_base(sa_base, 'A_u', sa_A) && sa_is_base(sa_base, 'tau_u', sa_T), continue; end
+        sa_set{end+1} = {sprintf('A_u-tau_u_A%s_T%s', sa_fmt(sa_A), sa_fmt(sa_T)), 'A_u+tau_u', ...
+                         {'A_u', sa_A, 'tau_u', sa_T, 'W_crit', sa_Wc_base}}; %#ok<AGROW>
+    end
+end
+sa_set{end+1} = {'A_u-tau_u_Aoff', 'A_u+tau_u', {'A_u', 0, 'W_crit', sa_Wc_base}};
+
+% task list, replication-major
+sa_tasks = {};
+for sa_r = 1:sa_cfg.nRep
+    for sa_k = 1:numel(sa_set)
+        sa_tasks{end+1} = struct('kind', 'run', ...
+            'file', fullfile(sa_outdir, sprintf('sensitivity_%s_rep%d.mat', sa_set{sa_k}{1}, sa_r)), ...
+            'tag', sa_set{sa_k}{1}, 'parameter', sa_set{sa_k}{2}, 'rep', sa_r, ...
+            'overrides', {sa_set{sa_k}{3}}, 'seed', sa_cfg.seeds(sa_r)); %#ok<AGROW>
+    end
+end
+sa_run_tasks(sa_tasks, sa_cfg);
+
+%% ---------------- Summary ------------------------------------------------
+defaultErrorParams('reset');
+if ~sa_cfg.dry_run
+    sa_T = sa_collect(sa_outdir);
+    fprintf('Done. %d runs summarized in %s\n', height(sa_T), fullfile(sa_outdir, 'summary.csv'));
+end
+end
+
+
+%% =========================== Local functions ============================
+
+function sa_run_tasks(sa_tasks, sa_cfg)
+% Run all tasks whose file does not exist yet, in parallel.
+    sa_pending = {};
+    for sa_k = 1:numel(sa_tasks)
+        sa_f = sa_tasks{sa_k}.file;
+        if sa_cfg.skip_existing && isfile(sa_f)
+            fprintf('skip  %s\n', sa_f);
+        else
+            fprintf('plan  %s\n', sa_f);
+            sa_pending{end+1} = sa_tasks{sa_k}; %#ok<AGROW>
+        end
+    end
+    if sa_cfg.dry_run || isempty(sa_pending), return; end
+
+    % The first run builds the traffic cache (data/cache); do it serially, so
+    % that parallel workers never build or read a half-finished cache.
+    if isempty(dir(fullfile(sa_cfg.root, 'data', 'cache', 'traffic_*.mat')))
+        fprintf('Building traffic cache with the first run (slow, one time only)...\n');
+        sa_task(sa_pending{1}, sa_cfg);
+        sa_pending(1) = [];
+    end
+    if isempty(sa_pending), return; end
+
+    % start the pool (falls back to serial execution if not possible)
+    if sa_cfg.n_workers > 0 && exist('gcp', 'file') == 2
+        try
+            if isempty(gcp('nocreate')), parpool('local', sa_cfg.n_workers); end
+        catch err
+            warning('No parallel pool (%s). Running serially.', err.message);
+        end
+    end
+
+    sa_n = numel(sa_pending);
+    parfor sa_k = 1:sa_n
+        sa_task(sa_pending{sa_k}, sa_cfg);
+    end
+end
+
+function sa_task(sa_t, sa_cfg)
+% One simulation run (called on a worker): set overrides, run, save, reset.
+    defaultErrorParams('reset');
+    sa_ov = sa_t.overrides;
+    for sa_k = 1:2:numel(sa_ov)
+        defaultErrorParams('set', sa_ov{sa_k}, sa_ov{sa_k+1});
+    end
+    if strcmp(sa_t.kind, 'run')
+        defaultErrorParams('set', 'seed', sa_t.seed);        % controller population
+        sim_ctrl = struct('enable_errors', true, 'rng_seed', sa_t.seed);
+    else
+        sim_ctrl = struct('enable_errors', false);
+    end
+    sa_info = struct('tag', sa_t.tag, 'parameter', sa_t.parameter, 'rep', sa_t.rep, ...
+                     'overrides', {sa_ov});
+    fprintf('run   %s\n', sa_t.file);
+    sa_run(sa_t.file, sa_info, sim_ctrl);
+    defaultErrorParams('reset');
+end
+
+function sa_Wc = sa_read_wcrit(sa_file)
+% Calibrated W_crit stored in a calibration file (NaN if not run yet).
+    if isfile(sa_file)
+        sa_s = load(sa_file, 'kpi');
+        sa_Wc = sa_s.kpi.W_p90;
+    else
+        sa_Wc = NaN;
+    end
+end
+
+function kpi = sa_run(sa_file, sa_info, sim_ctrl)
+% Run simulation.m in THIS function's workspace, then save that workspace.
+% (simulation.m starts with "clearvars -except sim_ctrl sa_*", so the inputs
+%  of this function survive.)
+    simulation;
+
+    kpi = sa_kpis(sep_min_infringements, ATC_instructions, AC_in_sector, ...
+                  History_Config, History_Workload);
+    run_info    = sa_info;
+    params_used = defaultErrorParams();
+
+    sa_vars = who;
+    sa_vars = sa_vars(~strncmp(sa_vars, 'sa_', 3) & ~strcmp(sa_vars, 'sim_ctrl') & ~strcmp(sa_vars, 'TrafficCache'));
+    save(sa_file, sa_vars{:});
+end
+
+function kpi = sa_kpis(sep, instr, ac, cfg, hw)
+% Scalar KPIs of one run.
+    W = [];
+    for k = 1:numel(hw)
+        if ~isempty(hw{k}), W = [W, hw{k}.Workload]; end %#ok<AGROW>
+    end
+    kpi.n_steps        = numel(sep);
+    kpi.sep_total      = sum(sep);
+    kpi.sep_mean       = mean(sep);
+    kpi.sep_max        = max(sep);
+    kpi.instr_total    = sum(instr);
+    kpi.ac_mean        = mean(ac);
+    kpi.config_changes = nnz(diff(cfg) ~= 0);
+    kpi.W_mean         = mean(W);
+    kpi.W_p90          = sa_prctile(W, 90);
+    kpi.W_max          = max(W);
+end
+
+function q = sa_prctile(x, p)
+% Percentile with MATLAB's prctile definition (no toolbox needed).
+    x = sort(x(~isnan(x)));
+    n = numel(x);
+    if n == 0, q = NaN; return; end
+    pos = p / 100 * n + 0.5;
+    if pos <= 1, q = x(1); return; end
+    if pos >= n, q = x(n); return; end
+    lo = floor(pos);
+    q = x(lo) + (pos - lo) * (x(lo+1) - x(lo));
+end
+
+function tf = sa_is_base(sa_base, name, value)
+    tf = abs(sa_base.(name) - value) < 1e-12;
+end
+
+function s = sa_fmt(v)
+% Number to file-name-safe string: 0.003 -> 0p003, -1 -> m1
+    s = sprintf('%g', v);
+    s = strrep(strrep(strrep(s, '.', 'p'), '-', 'm'), '+', '');
+end
+
+function T = sa_collect(sa_outdir)
+% Collect KPIs and parameters of all sensitivity_*.mat files into a table.
+    files = dir(fullfile(sa_outdir, 'sensitivity_*.mat'));
+    rows = [];
+    for k = 1:numel(files)
+        s = load(fullfile(sa_outdir, files(k).name), 'run_info', 'kpi', 'params_used');
+        row = struct('file', files(k).name, 'tag', s.run_info.tag, ...
+                     'parameter', s.run_info.parameter, 'rep', s.run_info.rep);
+        fn = fieldnames(s.kpi);
+        for j = 1:numel(fn), row.(fn{j}) = s.kpi.(fn{j}); end
+        pn = fieldnames(s.params_used);
+        for j = 1:numel(pn), row.(['p_' pn{j}]) = s.params_used.(pn{j}); end
+        if isempty(rows), rows = row; else, rows(end+1) = row; end %#ok<AGROW>
+    end
+    T = struct2table(rows);
+    writetable(T, fullfile(sa_outdir, 'summary.csv'));
+    save(fullfile(sa_outdir, 'summary.mat'), 'T');
+end
