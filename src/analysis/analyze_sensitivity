@@ -1,0 +1,714 @@
+function analyze_sensitivity()
+%% analyze_sensitivity.m
+% Reads the results of sensitivity_analysis.m (results/sensitivity_analysis)
+% and produces the figures and tables for the article plus diagnostic plots.
+%
+% Article figures (results/sensitivity_analysis/figures):
+%   fig_baseline_timeseries   error-free vs. baseline run (workload per agent,
+%                             open sectors, aircraft in area, infringements)
+%   fig_baseline_hist         workload distribution, error-free vs. baseline
+%   fig_tornado               one-at-a-time sensitivity (paired differences)
+%   fig_tau_mem_Wcrit         tau_mem with recalibrated W_crit
+%   fig_Au_tau_u              A_u x tau_u grid
+%   fig_workload_ecdf         workload distributions for the omega and tau_mem settings
+% Diagnostic figures (to judge how the errors act on the traffic):
+%   diag_traffic_over_time    aircraft in area / open sectors / cumulative infringements
+%   diag_max_sectors          share of steps with the maximum number of sectors open
+%   diag_final_state          flight levels of the aircraft at the end of the run
+%   diag_overview_heatmap     all settings x all KPIs (change vs. baseline)
+% Tables:  table_baseline_vs_errorfree.csv, table_all_settings.csv
+%
+% Metrics are computed once per result file and cached in analysis_cache.mat
+% (delete the file or set cfg.rebuild_cache = true after changing this script's
+% metrics). Statistics: mean and 95% CI (t distribution) over the replications;
+% sensitivity bars use PAIRED differences to the baseline (same seeds).
+
+%% ---------------- Configuration ----------------------------------------
+cfg.visible       = 'on';      % 'off' to only write the files
+cfg.formats       = {'png', 'pdf'};
+cfg.dpi           = 300;
+cfg.rebuild_cache = false;
+cfg.main_kpi      = 'sep_episodes';
+cfg.tornado_kpis  = {'sep_episodes', 'instr_total'};
+
+if isempty(getenv('PROJECT_ROOT')), try, init; catch, end, end %#ok<NOCOM>
+root = getenv('PROJECT_ROOT'); if isempty(root), root = pwd; end
+cfg.outdir = fullfile(root, 'results', 'sensitivity_analysis');
+cfg.figdir = fullfile(cfg.outdir, 'figures');
+if ~isfolder(cfg.figdir), mkdir(cfg.figdir); end
+
+% Force the light graphics theme (MATLAB R2025a+ follows the system dark mode);
+% silently ignored in older releases.
+try
+    s_theme = settings;
+    s_theme.matlab.appearance.figure.GraphicsTheme.TemporaryValue = 'light';
+catch
+end
+
+KPI = sa_kpi_defs();
+
+%% ---------------- Load / compute metrics --------------------------------
+R = sa_load_all(cfg);
+isrun = strcmp({R.kind}, 'run');
+if ~any(strcmp({R.tag}, 'baseline'))
+    error('No baseline runs found in %s', cfg.outdir);
+end
+base_tau = R(find(strcmp({R.tag}, 'baseline'), 1)).p.tau_mem;
+ef_idx = find(strcmp({R.kind}, 'calib') & arrayfun(@(r) abs(r.p.tau_mem - base_tau) < 1e-12, R), 1);
+if isempty(ef_idx), warning('No error-free calibration run for the baseline tau_mem.'); end
+fprintf('%d runs, %d calibration runs loaded.\n', sum(isrun), sum(~isrun));
+
+%% ---------------- Figures for the article -------------------------------
+sa_fig_baseline_timeseries(R, ef_idx, cfg);
+sa_fig_baseline_hist(R, ef_idx, cfg);
+sa_fig_tornado(R, KPI, cfg);
+sa_fig_tau(R, KPI, cfg);
+sa_fig_grid(R, KPI, cfg);
+sa_fig_ecdf(R, cfg);
+
+%% ---------------- Diagnostics -------------------------------------------
+sa_diag_traffic(R, ef_idx, cfg);
+sa_diag_max_sectors(R, ef_idx, cfg);
+sa_diag_final_state(R, ef_idx, cfg);
+sa_diag_overview(R, KPI, cfg);
+
+%% ---------------- Tables --------------------------------------------------
+sa_tables(R, ef_idx, KPI, cfg);
+sa_print_summary(R, ef_idx, KPI);
+fprintf('Figures and tables written to %s\n', cfg.figdir);
+end
+
+
+%% ======================================================================
+%%  Definitions
+%% ======================================================================
+function KPI = sa_kpi_defs()
+    d = { ...
+      'sep_episodes', 'Separation infringement episodes'; ...
+      'sep_ac_min',   'Aircraft-minutes in infringement'; ...
+      'instr_total',  'ATC instructions'; ...
+      'ac_mean',      'Mean aircraft in area'; ...
+      'nsec_mean',    'Mean open sectors'; ...
+      'W_mean',       'Mean agent workload'; ...
+      'frac_over',    'Share of agent-time with W > W_{crit}'; ...
+      'maxcfg_share', 'Share of steps with max. sectors open'; ...
+      'fl_out',       'Aircraft outside FL120-400 (end state)'};
+    KPI = struct('name', d(:, 1), 'label', d(:, 2));
+end
+
+function ord = sa_param_order()
+    ord = {'omega_2', 'omega_3', 'omega_4', 'P_base', 'P_max', 'f', 'M_error', ...
+           'tau_mem+W_crit', 'A_u+tau_u'};
+end
+
+function s = sa_param_label(name)
+    m = struct('omega_2', '\omega_2 (climb/descent)', 'omega_3', '\omega_3 (conflicts)', ...
+               'omega_4', '\omega_4 (handovers)', 'P_base', 'P_{base}', 'P_max', 'P_{max}', ...
+               'f', 'f (transition width)', 'M_error', 'M_{error}');
+    if isfield(m, name), s = m.(name); else, s = name; end
+end
+
+function lab = sa_setting_label(r)
+    switch r.parameter
+        case 'baseline',        lab = 'baseline';
+        case 'tau_mem+W_crit',  lab = sprintf('tau_mem=%g (W_crit=%.1f)', r.p.tau_mem, r.p.W_crit);
+        case 'A_u+tau_u',       lab = sprintf('A_u=%g, tau_u=%g', r.p.A_u, r.p.tau_u);
+        otherwise,              lab = sprintf('%s=%g', r.parameter, r.p.(r.parameter));
+    end
+end
+
+%% ======================================================================
+%%  Loading and metrics
+%% ======================================================================
+function R = sa_load_all(cfg)
+    files = [dir(fullfile(cfg.outdir, 'sensitivity_*.mat')); dir(fullfile(cfg.outdir, 'calibration_*.mat'))];
+    if isempty(files), error('No result files in %s', cfg.outdir); end
+    cfile = fullfile(cfg.outdir, 'analysis_cache.mat');
+    cache = [];
+    if isfile(cfile) && ~cfg.rebuild_cache
+        c = load(cfile); cache = c.cache;
+    end
+    R = [];
+    for k = 1:numel(files)
+        f = fullfile(cfg.outdir, files(k).name);
+        m = [];
+        if ~isempty(cache)
+            j = find(strcmp({cache.name}, files(k).name) & [cache.bytes] == files(k).bytes ...
+                     & [cache.datenum] == files(k).datenum, 1);
+            if ~isempty(j), m = cache(j); end
+        end
+        if isempty(m)
+            fprintf('metrics: %s\n', files(k).name);
+            try
+                m = sa_metrics(f);
+            catch err
+                warning('Skipping unreadable file %s (%s)', files(k).name, err.message);
+                continue;
+            end
+            m.bytes = files(k).bytes; m.datenum = files(k).datenum;
+        end
+        if isempty(R), R = m; else, R(end+1) = m; end %#ok<AGROW>
+    end
+    cache = R; %#ok<NASGU>
+    save(cfile, 'cache');
+    % share of steps with the largest number of open sectors seen in any run
+    Wc_base = R(find(strcmp({R.tag}, 'baseline'), 1)).p.W_crit;
+    for k = 1:numel(R)
+        if strcmp(R(k).kind, 'calib'), R(k).frac_over = mean(R(k).W > Wc_base); end
+    end
+    gmax = max(arrayfun(@(r) max(r.nsec), R));
+    for k = 1:numel(R)
+        R(k).maxcfg_share = mean(R(k).nsec == gmax);
+    end
+end
+
+function m = sa_metrics(f)
+    info = whos('-file', f);
+    want = intersect({'run_info', 'params_used', 'params', 'sep_min_infringements', ...
+        'ATC_instructions', 'AC_in_sector', 'History_Workload', 'D'}, {info.name});
+    s = load(f, want{:});
+    [~, name] = fileparts(f);
+    m.name = [name '.mat'];
+    m.file = f;
+    m.kind = 'run'; if strncmp(name, 'calibration', 11), m.kind = 'calib'; end
+    m.tag = s.run_info.tag; m.parameter = s.run_info.parameter; m.rep = s.run_info.rep;
+    m.p = s.params_used;
+    m.dt = 10;
+    if isfield(s, 'params') && isstruct(s.params) && isfield(s.params, 'dt_sec'), m.dt = s.params.dt_sec; end
+
+    sep = double(s.sep_min_infringements(:))';
+    m.sep = sep; m.ac = double(s.AC_in_sector(:))'; m.instr = double(s.ATC_instructions(:))';
+    HW = s.History_Workload; N = numel(HW);
+    nsec = zeros(1, N); W = [];
+    for k = 1:N
+        if ~isempty(HW{k}), nsec(k) = numel(HW{k}); W = [W, [HW{k}.Workload]]; end %#ok<AGROW>
+    end
+    m.nsec = nsec; m.W = W;
+
+    m.sep_episodes = sum(diff([0, sep > 0]) == 1);
+    m.sep_ac_min   = sum(sep) * m.dt / 60;
+    m.instr_total  = sum(m.instr);
+    m.ac_mean      = mean(m.ac);
+    m.nsec_mean    = mean(nsec);
+    m.W_mean       = mean(W);
+    m.W_p90        = sa_prctile(W, 90);
+    m.frac_over    = mean(W > m.p.W_crit);
+    m.maxcfg_share = NaN;
+    m.fl = []; m.fl_out = NaN;
+    if isfield(s, 'D') && ~isempty(s.D) && isfield(s.D, 'flightlevel')
+        fl = double([s.D.flightlevel]);
+        m.fl = fl; m.fl_out = mean(fl < 120 | fl > 400);
+    end
+end
+
+function q = sa_prctile(x, p)
+    x = sort(x(~isnan(x))); n = numel(x);
+    if n == 0, q = NaN; return; end
+    pos = p / 100 * n + 0.5;
+    if pos <= 1, q = x(1); return; end
+    if pos >= n, q = x(n); return; end
+    lo = floor(pos); q = x(lo) + (pos - lo) * (x(lo+1) - x(lo));
+end
+
+%% ======================================================================
+%%  Statistics helpers
+%% ======================================================================
+function t = sa_tcrit(df)
+    tab = [12.706 4.303 3.182 2.776 2.571 2.447 2.365 2.306 2.262 2.228 2.201 2.179 ...
+           2.160 2.145 2.131 2.120 2.110 2.101 2.093 2.086 2.080 2.074 2.069 2.064 ...
+           2.060 2.056 2.052 2.048 2.045 2.042];
+    if df < 1, t = NaN; elseif df <= 30, t = tab(df); else, t = 1.96; end
+end
+
+function s = sa_stats(x)
+    x = x(~isnan(x)); n = numel(x);
+    s.n = n; s.mean = mean(x); s.sd = NaN; s.ci = NaN;
+    if n > 1, s.sd = std(x); s.ci = sa_tcrit(n-1) * s.sd / sqrt(n); end
+    if n == 0, s.mean = NaN; end
+end
+
+function [v, reps] = sa_vals(R, tag, field)
+    idx = find(strcmp({R.tag}, tag) & strcmp({R.kind}, 'run'));
+    reps = arrayfun(@(i) R(i).rep, idx);
+    v = arrayfun(@(i) R(i).(field), idx);
+    [reps, o] = sort(reps); v = v(o);
+end
+
+function [d, a, b] = sa_paired(R, tagA, tagB, field)
+    [va, ra] = sa_vals(R, tagA, field);
+    [vb, rb] = sa_vals(R, tagB, field);
+    [~, ia, ib] = intersect(ra, rb);
+    a = va(ia); b = vb(ib); d = a - b;
+end
+
+function tags = sa_tags(R, parameter)
+    idx = find(strcmp({R.parameter}, parameter) & strcmp({R.kind}, 'run'));
+    tags = unique({R(idx).tag}, 'stable');
+end
+
+function v = sa_setting_value(R, tag, field)
+    r = R(find(strcmp({R.tag}, tag), 1));
+    v = r.p.(field);
+end
+
+%% ======================================================================
+%%  Plot helpers
+%% ======================================================================
+function fig = sa_newfig(cfg, w, h)
+    fig = figure('Visible', cfg.visible, 'Color', 'w', 'Position', [60 60 w h]);
+    try, theme(fig, 'light'); catch, end   % R2025a+: light theme for this figure
+    set(fig, 'PaperUnits', 'inches', 'PaperSize', [w h] / 100, 'PaperPosition', [0 0 w h] / 100);
+end
+
+function sa_errbar(x, y, e, col, mk, connect)
+% Mean +/- error bars with caps (same look in MATLAB and Octave).
+    e(isnan(e)) = 0; cw = 0.015 * (max(x) - min(x) + eps);
+    for i = 1:numel(x)
+        plot([x(i) x(i)], [y(i) - e(i), y(i) + e(i)], '-', 'Color', col, 'LineWidth', 1.2);
+        plot(x(i) + [-cw cw], [y(i) - e(i) y(i) - e(i)], '-', 'Color', col, 'LineWidth', 1.2);
+        plot(x(i) + [-cw cw], [y(i) + e(i) y(i) + e(i)], '-', 'Color', col, 'LineWidth', 1.2);
+    end
+    if connect, plot(x, y, '-', 'Color', col, 'LineWidth', 1.5); end
+    plot(x, y, mk, 'Color', col, 'MarkerFaceColor', col, 'MarkerSize', 6);
+end
+
+function sa_save(fig, name, cfg)
+    for k = 1:numel(cfg.formats)
+        fmt = cfg.formats{k};
+        try
+            print(fig, fullfile(cfg.figdir, [name '.' fmt]), ['-d' fmt], sprintf('-r%d', cfg.dpi));
+        catch err
+            warning('Could not write %s.%s (%s)', name, fmt, err.message);
+        end
+    end
+    if strcmp(cfg.visible, 'off'), close(fig); end
+end
+
+function sa_text_box(ax, str)
+    text(0.5, 0.5, str, 'Parent', ax, 'Units', 'normalized', 'HorizontalAlignment', 'center');
+    set(ax, 'XTick', [], 'YTick', []);
+end
+
+function [names, Wm, nsec] = sa_workload_matrix(HW)
+    N = numel(HW); allnames = {}; nsec = zeros(1, N);
+    for i = 1:N
+        if ~isempty(HW{i}), nsec(i) = numel(HW{i}); allnames = [allnames, {HW{i}.SectorName}]; end %#ok<AGROW>
+    end
+    names = unique(allnames); Wm = NaN(numel(names), N);
+    for i = 1:N
+        for k = 1:numel(HW{i})
+            Wm(strcmp(names, HW{i}(k).SectorName), i) = HW{i}(k).Workload;
+        end
+    end
+end
+
+function c = sa_colors(n)
+    c = hsv(max(n, 1));
+    if n > 1
+        st = rand('state'); rand('state', 42); c = c(randperm(n), :); rand('state', st); %#ok<RAND>
+    end
+end
+
+function c = sa_diverging(n)
+    h = floor(n / 2);
+    lo = [linspace(0.20, 1, h)', linspace(0.40, 1, h)', linspace(0.80, 1, h)'];
+    hi = [linspace(1, 0.85, n-h)', linspace(1, 0.20, n-h)', linspace(1, 0.20, n-h)'];
+    c = [lo; hi];
+end
+
+function k = sa_median_rep(R, tag)
+% Index (into R) of the baseline run whose episode count is closest to the median.
+    idx = find(strcmp({R.tag}, tag) & strcmp({R.kind}, 'run'));
+    v = arrayfun(@(i) R(i).sep_episodes, idx);
+    [~, j] = min(abs(v - median(v))); k = idx(j);
+end
+
+%% ======================================================================
+%%  Article figures
+%% ======================================================================
+function sa_fig_baseline_timeseries(R, ef_idx, cfg)
+    if isempty(ef_idx), return; end
+    kb = sa_median_rep(R, 'baseline');
+    sel = [ef_idx, kb];
+    ttl = {'(a) Error-free', sprintf('(b) With controller errors (baseline, rep. %d)', R(kb).rep)};
+    Wc = R(kb).p.W_crit;    % the W_crit used in the error runs (calibrated), for both panels
+    fig = sa_newfig(cfg, 1250, 1050);
+    ax = zeros(4, 2);
+    for c = 1:2
+        r = R(sel(c));
+        s = load(r.file, 'History_Workload');
+        [names, Wm, nsec] = sa_workload_matrix(s.History_Workload);
+        N = numel(nsec); x = (0:N-1) * r.dt / 60;
+
+        % row 1: workload per agent, W_crit, infringement markers
+        ax(1, c) = subplot(4, 2, c); hold on; col = sa_colors(numel(names));
+        for i = 1:numel(names), plot(x, Wm(i, :), '-', 'LineWidth', 1.4, 'Color', col(i, :)); end
+        plot([0 x(end)], [Wc Wc], 'k--', 'LineWidth', 1.2);
+        ymax = max(max(Wm(:)), Wc) * 1.15;
+        inf_x = x(r.sep > 0);
+        if ~isempty(inf_x), plot(inf_x, repmat(ymax * 0.97, size(inf_x)), 'v', 'MarkerSize', 4, ...
+                'MarkerFaceColor', [0.8 0.1 0.1], 'MarkerEdgeColor', 'none'); end
+        ylim([0 ymax]); xlim([0 x(end)]); ylabel('Agent workload');
+        text(x(end), Wc, 'W_{crit} ', 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'right');
+        title(ttl{c}); grid on; hold off;
+
+        % row 2: open sectors
+        ax(2, c) = subplot(4, 2, 2 + c); [xs, ys] = stairs(x, nsec); plot(xs, ys, '-', 'Color', [0.35 0.35 0.35], 'LineWidth', 1.8);
+        ylabel('Open sectors'); xlim([0 x(end)]); ylim([0, max(nsec) + 1]); grid on;
+        % row 3: aircraft in area
+        ax(3, c) = subplot(4, 2, 4 + c); plot(x, r.ac, 'LineWidth', 1.4, 'Color', [0.1 0.4 0.7]);
+        ylabel('Aircraft in area'); xlim([0 x(end)]); grid on;
+        % row 4: aircraft in infringement
+        ax(4, c) = subplot(4, 2, 6 + c); bar(x, r.sep, 1, 'FaceColor', [0.8 0.1 0.1], 'EdgeColor', 'none');
+        ylabel('Aircraft in infringement'); xlabel('Simulation time (min)'); xlim([0 x(end)]); grid on;
+    end
+    % common y limits per row, so that (a) and (b) are directly comparable
+    for row = 1:4
+        yl = cell2mat(get(ax(row, :)', 'YLim')); set(ax(row, :), 'YLim', [0, max(yl(:))]);
+    end
+    sa_save(fig, 'fig_baseline_timeseries', cfg);
+end
+
+function sa_fig_baseline_hist(R, ef_idx, cfg)
+    if isempty(ef_idx), return; end
+    ib = find(strcmp({R.tag}, 'baseline') & strcmp({R.kind}, 'run'));
+    Wb = [R(ib).W]; We = R(ef_idx).W; Wc = R(ib(1)).p.W_crit;
+    top = max([Wb, We]); edges = 0:2:ceil(top / 2) * 2 + 2; ctr = edges(1:end-1) + 1;
+    ne = histc(We, edges); ne = ne(1:end-1) / numel(We);
+    nb = histc(Wb, edges); nb = nb(1:end-1) / numel(Wb);
+    fig = sa_newfig(cfg, 800, 480); hold on;
+    bar(ctr, ne, 1, 'FaceColor', [0.2 0.6 0.8], 'EdgeColor', 'w');
+    stairs(edges(1:end-1), nb, 'Color', [0.8 0.2 0.2], 'LineWidth', 2);
+    plot([Wc Wc], [0 max([ne, nb]) * 1.1], 'k--', 'LineWidth', 1.5);
+    text(Wc, max([ne, nb]) * 1.08, sprintf(' W_{crit} = %.1f', Wc), 'VerticalAlignment', 'top');
+    xlabel('Agent workload (smoothed)'); ylabel('Relative frequency per 2 units');
+    legend({'Error-free', 'With controller errors (baseline, all replications)', 'W_{crit}'}, 'Location', 'northeast');
+    grid on; hold off;
+    sa_save(fig, 'fig_baseline_hist', cfg);
+end
+
+function sa_fig_tornado(R, KPI, cfg)
+    ord = sa_param_order(); ord = ord(1:7);
+    params = ord(ismember(ord, {R.parameter}));
+    if isempty(params), return; end
+    nk = numel(cfg.tornado_kpis); np = numel(params);
+
+    % order of the rows from the first KPI (range of the paired relative change)
+    rng_first = zeros(1, np);
+    D = cell(np, nk);
+    for j = 1:nk
+        fld = cfg.tornado_kpis{j};
+        [bv, ~] = sa_vals(R, 'baseline', fld); bm = mean(bv);
+        for i = 1:np
+            tags = sa_tags(R, params{i}); vals = zeros(1, numel(tags)); dm = vals; dc = vals;
+            for t = 1:numel(tags)
+                vals(t) = sa_setting_value(R, tags{t}, params{i});
+                d = sa_paired(R, tags{t}, 'baseline', fld); st = sa_stats(d);
+                dm(t) = st.mean; dc(t) = st.ci;
+            end
+            vb = sa_setting_value(R, 'baseline', params{i});
+            vals = [vals, vb]; dm = [dm, 0]; dc = [dc, 0]; %#ok<AGROW>
+            [vals, o] = sort(vals); dm = dm(o); dc = dc(o);
+            if bm > 0, sc = 100 / bm; else, sc = 1; end
+            D{i, j} = struct('vals', vals, 'dm', dm * sc, 'dc', dc * sc, 'rel', bm > 0);
+            if j == 1, rng_first(i) = max(D{i, j}.dm) - min(D{i, j}.dm); end
+        end
+    end
+    [~, order] = sort(rng_first, 'descend');
+
+    fig = sa_newfig(cfg, 520 * nk + 160, 150 + 62 * np);
+    for j = 1:nk
+        subplot(1, nk, j); hold on;
+        fld = cfg.tornado_kpis{j}; lab = KPI(strcmp({KPI.name}, fld)).label;
+        [bv, ~] = sa_vals(R, 'baseline', fld); bs = sa_stats(bv);
+        rel = D{1, j}.rel;
+        if rel && bs.mean > 0, nb = bs.ci / bs.mean * 100; else, nb = bs.ci; end
+        if ~isnan(nb), fill([-nb nb nb -nb], [0.3 0.3 np+0.7 np+0.7], [0.88 0.88 0.88], 'EdgeColor', 'none'); end
+        for rr = 1:np
+            Dk = D{order(rr), j}; v = Dk.vals; nv = numel(v);
+            for q = [1, nv]       % extreme settings as bars
+                if q == 1, ycen = rr - 0.18; colr = [0.35 0.60 0.85]; else, ycen = rr + 0.18; colr = [0.85 0.45 0.25]; end
+                dm = Dk.dm(q);
+                fill([0 dm dm 0], [ycen-0.15 ycen-0.15 ycen+0.15 ycen+0.15], colr, 'EdgeColor', 'none');
+                plot(dm + [-1 1] * Dk.dc(q), [ycen ycen], 'k-', 'LineWidth', 1);
+                ha = 'left'; if dm < 0, ha = 'right'; end
+                text(dm + sign(dm + eps) * 0.01 * max(abs(xlim) + 1), ycen, sprintf(' %g ', v(q)), ...
+                     'HorizontalAlignment', ha, 'FontSize', 8);
+            end
+            for q = 2:nv-1        % intermediate settings as markers
+                plot(Dk.dm(q), rr, 'ko', 'MarkerSize', 4, 'MarkerFaceColor', 'w');
+            end
+        end
+        plot([0 0], [0.3 np + 0.7], 'k-', 'LineWidth', 1.2);
+        set(gca, 'YDir', 'reverse', 'YLim', [0.3 np + 0.7], 'YTick', 1:np);
+        if j == 1
+            set(gca, 'YTickLabel', cellfun(@sa_param_label, params(order), 'UniformOutput', false));
+        else
+            set(gca, 'YTickLabel', []);
+        end
+        if rel, xlabel(sprintf('Change in %s (%% of baseline = %.3g)', lab, bs.mean));
+        else, xlabel(sprintf('Change in %s (baseline = %.3g)', lab, bs.mean)); end
+        grid on; box on; hold off;
+    end
+    sa_save(fig, 'fig_tornado', cfg);
+end
+
+function sa_fig_tau(R, KPI, cfg)
+    tags = sa_tags(R, 'tau_mem+W_crit');
+    if isempty(tags), return; end
+    tau = []; Wc = []; kp = {}; 
+    allt = [tags, {'baseline'}];
+    for t = 1:numel(allt)
+        tau(t) = sa_setting_value(R, allt{t}, 'tau_mem'); %#ok<AGROW>
+        Wc(t)  = sa_setting_value(R, allt{t}, 'W_crit'); %#ok<AGROW>
+        kp{t} = allt{t}; %#ok<AGROW>
+    end
+    [tau, o] = sort(tau); Wc = Wc(o); allt = allt(o);
+    fld = cfg.main_kpi; lab = KPI(strcmp({KPI.name}, fld)).label;
+    m = zeros(size(tau)); c = m; fo = m; fc = m; ef = nan(size(tau));
+    for t = 1:numel(tau)
+        s = sa_stats(sa_vals(R, allt{t}, fld)); m(t) = s.mean; c(t) = s.ci;
+        s2 = sa_stats(sa_vals(R, allt{t}, 'frac_over')); fo(t) = s2.mean * 100; fc(t) = s2.ci * 100;
+        ci = find(strcmp({R.kind}, 'calib') & arrayfun(@(r) abs(r.p.tau_mem - tau(t)) < 1e-12, R), 1);
+        if ~isempty(ci), ef(t) = R(ci).(fld); end
+    end
+    c(isnan(c)) = 0; fc(isnan(fc)) = 0;
+    fig = sa_newfig(cfg, 1250, 400);
+    subplot(1, 3, 1); hold on;
+    sa_errbar(tau, m, c, [0.85 0.45 0.25], 'o', true);
+    plot(tau, ef, 's--', 'LineWidth', 1.2, 'Color', [0.35 0.35 0.35], 'MarkerFaceColor', 'w');
+    xlabel('\tau_{mem} (min)'); ylabel(lab); legend({'With errors (mean \pm 95% CI)', 'Error-free'}, 'Location', 'best');
+    title('(a) Outcome'); grid on; hold off;
+    subplot(1, 3, 2); plot(tau, Wc, 'o-', 'LineWidth', 1.5, 'MarkerFaceColor', [0.2 0.6 0.8]);
+    xlabel('\tau_{mem} (min)'); ylabel('Calibrated W_{crit}'); title('(b) Recalibrated W_{crit}'); grid on;
+    subplot(1, 3, 3); hold on; sa_errbar(tau, fo, fc, [0.2 0.6 0.8], 'o', true); hold off;
+    xlabel('\tau_{mem} (min)'); ylabel('Agent-time with W > W_{crit} (%)'); title('(c) Overload exposure'); grid on;
+    sa_save(fig, 'fig_tau_mem_Wcrit', cfg);
+end
+
+function sa_fig_grid(R, KPI, cfg)
+    tags = sa_tags(R, 'A_u+tau_u');
+    if isempty(tags) || ~any(strcmp(tags, 'A_u-tau_u_Aoff')), return; end
+    fld = cfg.main_kpi; lab = KPI(strcmp({KPI.name}, fld)).label;
+    grid_tags = [tags(~strcmp(tags, 'A_u-tau_u_Aoff')), {'baseline'}];
+    Av = zeros(1, numel(grid_tags)); Tv = Av;
+    for t = 1:numel(grid_tags)
+        Av(t) = sa_setting_value(R, grid_tags{t}, 'A_u'); Tv(t) = sa_setting_value(R, grid_tags{t}, 'tau_u');
+    end
+    Au = unique(Av); Tu = unique(Tv);
+    M = NaN(numel(Au), numel(Tu)); Sg = false(size(M)); P = [];  X = []; Y = []; Ye = [];
+    bm = mean(sa_vals(R, 'A_u-tau_u_Aoff', fld));
+    for t = 1:numel(grid_tags)
+        i = find(Au == Av(t)); j = find(Tu == Tv(t));
+        d = sa_paired(R, grid_tags{t}, 'A_u-tau_u_Aoff', fld); s = sa_stats(d);
+        if bm > 0, M(i, j) = s.mean / bm * 100; else, M(i, j) = s.mean; end
+        Sg(i, j) = ~isnan(s.ci) && abs(s.mean) > s.ci;
+        sv = sa_stats(sa_vals(R, grid_tags{t}, fld));
+        X(end+1) = Av(t) * Tv(t); Y(end+1) = sv.mean; Ye(end+1) = sv.ci; %#ok<AGROW>
+    end
+    so = sa_stats(sa_vals(R, 'A_u-tau_u_Aoff', fld));
+    fig = sa_newfig(cfg, 1100, 430);
+    subplot(1, 2, 1);
+    lim = max(abs(M(:))); if isnan(lim) || lim == 0, lim = 1; end
+    imagesc(M, [-lim lim]); colormap(sa_diverging(64)); colorbar;
+    set(gca, 'XTick', 1:numel(Tu), 'XTickLabel', arrayfun(@(v) sprintf('%g', v), Tu, 'UniformOutput', false), ...
+        'YTick', 1:numel(Au), 'YTickLabel', arrayfun(@(v) sprintf('%g', v), Au, 'UniformOutput', false));
+    ylabel('A_u');
+    for i = 1:numel(Au)
+        for j = 1:numel(Tu)
+            if isnan(M(i, j)), continue; end
+            star = ''; if Sg(i, j), star = '*'; end
+            if bm > 0, str = sprintf('%+.0f%%%s', M(i, j), star); else, str = sprintf('%+.2g%s', M(i, j), star); end
+            text(j, i, str, 'HorizontalAlignment', 'center');
+        end
+    end
+    title('(a) Change vs. underload off (A_u = 0)'); xlabel(sprintf('tau_u (workload units)   [%s; * = 95%% CI excludes 0]', lab), 'Interpreter', 'none');
+    subplot(1, 2, 2); hold on;
+    sa_errbar(X, Y, Ye, [0.85 0.45 0.25], 'o', false);
+    sa_errbar(0, so.mean, ifelse_nan(so.ci), [0.35 0.35 0.35], 's', false);
+    xlabel('A_u \cdot \tau_u'); ylabel(lab); title('(b) Outcome vs. product A_u\cdot\tau_u'); grid on; hold off;
+    sa_save(fig, 'fig_Au_tau_u', cfg);
+end
+
+function v = ifelse_nan(x)
+    if isnan(x), v = 0; else, v = x; end
+end
+
+function sa_fig_ecdf(R, cfg)
+    groups = { 'omega_2', 'omega_3', 'omega_4', 'tau_mem+W_crit' };
+    ttl = { '(a) \omega_2', '(b) \omega_3', '(c) \omega_4', '(d) \tau_{mem} (markers: W_{crit})' };
+    fig = sa_newfig(cfg, 1150, 800); any_plot = false;
+    for g = 1:4
+        subplot(2, 2, g); hold on;
+        tags = [sa_tags(R, groups{g}), {'baseline'}];
+        if numel(tags) < 2, sa_text_box(gca, 'not run'); continue; end
+        key = groups{g}; if g == 4, key = 'tau_mem'; end
+        vals = cellfun(@(t) sa_setting_value(R, t, key), tags); [vals, o] = sort(vals); tags = tags(o);
+        col = lines(numel(tags)); leg = {};
+        for t = 1:numel(tags)
+            idx = find(strcmp({R.tag}, tags{t}) & strcmp({R.kind}, 'run'));
+            W = sort([R(idx).W]); n = numel(W); if n == 0, continue; end
+            plot(W, (1:n) / n, 'LineWidth', 1.6, 'Color', col(t, :));
+            leg{end+1} = sprintf('%s = %g', strrep(key, '_', '\_'), vals(t)); %#ok<AGROW>
+            if g == 4
+                Wc = sa_setting_value(R, tags{t}, 'W_crit'); k = find(W >= Wc, 1); if isempty(k), k = n; end
+                plot(Wc, k / n, 'o', 'MarkerSize', 6, 'MarkerFaceColor', col(t, :), 'MarkerEdgeColor', 'k');
+            end
+            any_plot = true;
+        end
+        xlabel('Agent workload (smoothed)'); ylabel('Cumulative share'); title(ttl{g});
+        legend(leg, 'Location', 'southeast'); grid on; hold off;
+    end
+    if any_plot, sa_save(fig, 'fig_workload_ecdf', cfg); end
+end
+
+%% ======================================================================
+%%  Diagnostics
+%% ======================================================================
+function sa_diag_traffic(R, ef_idx, cfg)
+    ib = find(strcmp({R.tag}, 'baseline') & strcmp({R.kind}, 'run'));
+    if isempty(ib), return; end
+    N = min(arrayfun(@(i) numel(R(i).ac), ib)); dt = R(ib(1)).dt; x = (0:N-1) * dt / 60;
+    fields = {'ac', 'nsec', 'sep'}; ylab = {'Aircraft in area', 'Open sectors', 'Cumulative aircraft-minutes in infringement'};
+    fig = sa_newfig(cfg, 900, 850);
+    for f = 1:3
+        subplot(3, 1, f); hold on;
+        A = zeros(numel(ib), N);
+        for k = 1:numel(ib)
+            v = R(ib(k)).(fields{f})(1:N); if f == 3, v = cumsum(v) * dt / 60; end
+            A(k, :) = v;
+        end
+        fill([x fliplr(x)], [min(A, [], 1) fliplr(max(A, [], 1))], [0.95 0.75 0.7], 'EdgeColor', 'none');
+        plot(x, mean(A, 1), 'Color', [0.8 0.2 0.2], 'LineWidth', 1.8);
+        leg = {'range of replications', 'with errors (mean)'};
+        if ~isempty(ef_idx)
+            v = R(ef_idx).(fields{f})(1:N); if f == 3, v = cumsum(v) * dt / 60; end
+            plot(x, v, 'Color', [0.1 0.4 0.7], 'LineWidth', 1.8); leg{end+1} = 'error-free'; %#ok<AGROW>
+        end
+        ylabel(ylab{f}); xlim([0 x(end)]); grid on; if f == 1, legend(leg, 'Location', 'best'); end
+        if f == 3, xlabel('Simulation time (min)'); end
+        hold off;
+    end
+    sa_save(fig, 'diag_traffic_over_time', cfg);
+end
+
+function sa_diag_max_sectors(R, ef_idx, cfg)
+    isrun = find(strcmp({R.kind}, 'run'));
+    tags = unique({R(isrun).tag}, 'stable'); n = numel(tags);
+    v = zeros(1, n); c = v; lab = cell(1, n);
+    for t = 1:n
+        s = sa_stats(sa_vals(R, tags{t}, 'maxcfg_share')); v(t) = s.mean * 100; c(t) = ifelse_nan(s.ci) * 100;
+        lab{t} = sa_setting_label(R(find(strcmp({R.tag}, tags{t}), 1)));
+    end
+    fig = sa_newfig(cfg, 900, 120 + 22 * n); hold on;
+    barh(1:n, v, 0.7, 'FaceColor', [0.85 0.45 0.25], 'EdgeColor', 'none');
+    for t = 1:n, plot(v(t) + [-1 1] * c(t), [t t], 'k-'); end
+    if ~isempty(ef_idx), plot(R(ef_idx).maxcfg_share * [100 100], [0 n + 1], 'b--', 'LineWidth', 1.5); end
+    set(gca, 'YDir', 'reverse', 'YTick', 1:n, 'YTickLabel', strrep(lab, '_', '\_'), 'YLim', [0 n + 1]);
+    xlabel('Share of steps with the maximum number of sectors open (%)  [upper bound of SV fallback]');
+    title('Dashed: error-free run'); grid on; hold off;
+    sa_save(fig, 'diag_max_sectors', cfg);
+end
+
+function sa_diag_final_state(R, ef_idx, cfg)
+    ib = find(strcmp({R.tag}, 'baseline') & strcmp({R.kind}, 'run'));
+    FLb = [R(ib).fl];
+    if isempty(FLb) || isempty(ef_idx) || isempty(R(ef_idx).fl)
+        fprintf('diag_final_state: no aircraft state (D) saved, skipped.\n'); return;
+    end
+    FLe = R(ef_idx).fl; edges = 0:10:700;
+    ne = histc(FLe, edges) / numel(FLe); nb = histc(FLb, edges) / numel(FLb);
+    fig = sa_newfig(cfg, 800, 450); hold on;
+    stairs(edges, ne, 'Color', [0.1 0.4 0.7], 'LineWidth', 2);
+    stairs(edges, nb, 'Color', [0.8 0.2 0.2], 'LineWidth', 2);
+    yl = max([ne nb]) * 1.1; plot([120 120], [0 yl], 'k--'); plot([400 400], [0 yl], 'k--');
+    xlabel('Flight level of aircraft at the end of the run'); ylabel('Relative frequency');
+    legend({sprintf('error-free (%.1f%% outside 120-400)', 100 * R(ef_idx).fl_out), ...
+            sprintf('with errors (%.1f%% outside)', 100 * mean([R(ib).fl_out]))}, 'Location', 'northeast');
+    title('Dashed: range of flight levels that generateRequests allows'); grid on; hold off;
+    sa_save(fig, 'diag_final_state', cfg);
+end
+
+function sa_diag_overview(R, KPI, cfg)
+    ord = sa_param_order(); isrun = find(strcmp({R.kind}, 'run'));
+    tags = {}; keys = [];
+    for i = 1:numel(ord)
+        t = sa_tags(R, ord{i});
+        if isempty(t), continue; end
+        vals = zeros(1, numel(t));
+        for k = 1:numel(t)
+            r = R(find(strcmp({R.tag}, t{k}), 1));
+            switch ord{i}
+                case 'tau_mem+W_crit', vals(k) = r.p.tau_mem;
+                case 'A_u+tau_u',      vals(k) = r.p.A_u * 1000 + r.p.tau_u;
+                otherwise,             vals(k) = r.p.(ord{i});
+            end
+        end
+        [~, o] = sort(vals); tags = [tags, t(o)]; %#ok<AGROW>
+    end
+    n = numel(tags); nk = numel(KPI); M = NaN(n, nk); lab = cell(n, 1);
+    for t = 1:n
+        lab{t} = sa_setting_label(R(find(strcmp({R.tag}, tags{t}), 1)));
+        for k = 1:nk
+            [d, ~, b] = sa_paired(R, tags{t}, 'baseline', KPI(k).name);
+            if ~isempty(b) && mean(b) > 0 && ~all(isnan(d)), M(t, k) = mean(d) / mean(b) * 100; end
+        end
+    end
+    fig = sa_newfig(cfg, 1150, 140 + 22 * n);
+    lim = 100; Mc = max(min(M, lim), -lim);
+    imagesc(Mc, [-lim lim]); colormap(sa_diverging(64)); colorbar;
+    set(gca, 'YTick', 1:n, 'YTickLabel', strrep(lab, '_', '\_'), 'XTick', 1:nk, 'XTickLabel', {});
+    for k = 1:nk
+        text(k, n + 0.9, KPI(k).label, 'Rotation', -30, 'HorizontalAlignment', 'left', 'FontSize', 8);
+    end
+    for t = 1:n
+        for k = 1:nk
+            if ~isnan(M(t, k)), text(k, t, sprintf('%+.0f', M(t, k)), 'HorizontalAlignment', 'center', 'FontSize', 8); end
+        end
+    end
+    title('Change vs. baseline (%, paired mean over replications; color clipped at \pm100%)');
+    set(gca, 'Position', [0.22 0.18 0.62 0.74]);
+    sa_save(fig, 'diag_overview_heatmap', cfg);
+end
+
+%% ======================================================================
+%%  Tables and console summary
+%% ======================================================================
+function sa_tables(R, ef_idx, KPI, cfg)
+    % Table 2: error-free vs. baseline
+    f = fopen(fullfile(cfg.figdir, 'table_baseline_vs_errorfree.csv'), 'w');
+    fprintf(f, 'kpi,error_free,baseline_mean,baseline_ci95,n_reps\n');
+    for k = 1:numel(KPI)
+        s = sa_stats(sa_vals(R, 'baseline', KPI(k).name)); ef = NaN;
+        if ~isempty(ef_idx), ef = R(ef_idx).(KPI(k).name); end
+        fprintf(f, '"%s",%.6g,%.6g,%.6g,%d\n', strrep(KPI(k).label, '"', ''''), ef, s.mean, s.ci, s.n);
+    end
+    fclose(f);
+    % all settings (appendix)
+    isrun = find(strcmp({R.kind}, 'run')); tags = unique({R(isrun).tag}, 'stable');
+    f = fopen(fullfile(cfg.figdir, 'table_all_settings.csv'), 'w');
+    fprintf(f, 'tag,setting,n_reps');
+    for k = 1:numel(KPI), fprintf(f, ',%s_mean,%s_ci95', KPI(k).name, KPI(k).name); end
+    fprintf(f, '\n');
+    for t = 1:numel(tags)
+        r = R(find(strcmp({R.tag}, tags{t}), 1));
+        [v, reps] = sa_vals(R, tags{t}, 'sep_episodes'); %#ok<ASGLU>
+        fprintf(f, '%s,"%s",%d', tags{t}, sa_setting_label(r), numel(reps));
+        for k = 1:numel(KPI)
+            s = sa_stats(sa_vals(R, tags{t}, KPI(k).name)); fprintf(f, ',%.6g,%.6g', s.mean, s.ci);
+        end
+        fprintf(f, '\n');
+    end
+    fclose(f);
+end
+
+function sa_print_summary(R, ef_idx, KPI)
+    fprintf('\n=== Baseline vs. error-free ===\n');
+    for k = 1:numel(KPI)
+        s = sa_stats(sa_vals(R, 'baseline', KPI(k).name)); ef = NaN;
+        if ~isempty(ef_idx), ef = R(ef_idx).(KPI(k).name); end
+        fprintf('%-45s error-free %10.4g | baseline %10.4g +/- %.3g (n=%d)\n', KPI(k).label, ef, s.mean, s.ci, s.n);
+    end
+    fprintf('\nIf "mean aircraft in area" or "share of steps with max. sectors" is clearly higher with errors,\n');
+    fprintf('the errors make aircraft accumulate (see diag_traffic_over_time, diag_final_state).\n\n');
+end
