@@ -183,7 +183,7 @@ function [active_config_id, ActiveSectors] = SVAgent(D, varargin)
         downgrade_candidate = 0;
         for i = 1:length(valid_configs)
             if valid_configs(i).NumSectors < config_stats(curr_idx).NumSectors
-                if valid_configs(i).MaxUtilization < 0.95
+                if valid_configs(i).MaxUtilization < 0.80
                     downgrade_candidate = valid_configs(i).ConfigID;
                     break; 
                 end
