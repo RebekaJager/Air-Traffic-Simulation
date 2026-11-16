@@ -1,0 +1,28 @@
+function P = errorProbability(W, params, traits)
+% ERRORPROBABILITY - Error probability per ATC instruction
+%   P = ERRORPROBABILITY(W)                  nominal controller, default params
+%   P = ERRORPROBABILITY(W, params)          nominal controller
+%   P = ERRORPROBABILITY(W, params, traits)  controller with traits.m_P,
+%                                            traits.m_W (individual differences)
+%   W may be an array. Output is a probability in [0,1] (not percent).
+
+if nargin < 2 || isempty(params)
+    params = defaultErrorParams();
+else
+    params = defaultErrorParams(params);   % fill in missing fields
+end
+if nargin < 3 || isempty(traits)
+    traits.m_P = 1;
+    traits.m_W = 1;
+end
+
+P_base = params.P_base * traits.m_P;     % individual baseline error
+W_crit = params.W_crit * traits.m_W;     % individual capacity
+
+% steepness: fixed for the population, derived from the NOMINAL W_crit
+k = 4.39 / (params.f * params.W_crit);
+
+P_over  = P_base + (params.P_max - P_base) ./ (1 + exp(-k * (W - W_crit)));   % (3)
+P_under = params.A_u * exp(-W / params.tau_u);                                  % (4)
+P = P_over + P_under - P_over .* P_under;                                       % (5)
+end
