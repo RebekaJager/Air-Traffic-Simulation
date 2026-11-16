@@ -1,0 +1,117 @@
+function varargout = defaultErrorParams(varargin)
+% DEFAULTERRORPARAMS - Single source of all model parameters.
+%
+%   Syntax
+%       p = defaultErrorParams()                  entire parameter struct
+%       v = defaultErrorParams('P_base')          only the named parameter
+%       [a, b] = defaultErrorParams('P_base', 'P_max')   several parameters
+%       p = defaultErrorParams(userStruct)        userStruct with every
+%                                                 missing field filled in
+%
+%   Temporary overrides (used by sensitivity_analysis.m; they survive
+%   'clearvars' but not 'clear functions'/'clear all'):
+%       defaultErrorParams('set', 'P_base', 3e-3)   override one parameter
+%       defaultErrorParams('reset')                 drop all overrides
+%       o = defaultErrorParams('overrides')         list active overrides
+%
+%   Typical use for a sweep:
+%       p = defaultErrorParams();
+%       p.A_u = 0.1;  p.tau_u = 20;
+%       SectorManager(C, Sectors, true, p);
+%
+%   Sensitivity ranges of Table 1 are listed in the comments.
+
+    p = struct();
+
+    % ---------------- Workload function -------------------------------
+    p.omega_1 = 1;       % baseline monitoring weight          (fixed reference)
+    p.omega_2 = 2;       % climbing/descending aircraft        {1-3}
+    p.omega_3 = 4;       % conflicts                           {2-6}
+    p.omega_4 = 2;       % handovers/coordination              {1-4}
+
+    % ---------------- Memory ------------------------------------------
+    p.tau_mem = 5;       % workload memory time constant [min]  sweep {0; 2.5; 5; 10; 15}
+                         % lambda = exp(-dt/tau_mem); 0 = no smoothing
+
+    % ---------------- Error function ----------------------------------
+    p.P_base  = 1e-3;    % baseline error probability          {1e-3; 3e-3; 1e-2}
+    p.P_max   = 0.4;     % ceiling at full overload            {0.3; 0.5}
+    p.W_crit  = 98.3;    % nominal critical workload           (not swept)
+    p.f       = 0.3;     % transition width ratio, k = 4.39/(f*W_crit)  {0.1; 0.5}
+    p.A_u     = 0.05;    % underload term at W = 0, 0 = off    (planned {0.01; 0.05; 0.1})
+    p.tau_u   = 10;      % underload decay constant [W units]  (planned {5; 10; 20})
+    p.M_error = 0.2;     % max relative perturbation of an instruction  {0.1; 0.2; 0.3}
+
+    % ---------------- Individual differences --------------------------
+    p.sigma_P = 0.1;     % sd of log m_P (baseline error)      (fixed)
+    p.sigma_W = 0.1;     % sd of log m_W (capacity)            (fixed)
+
+    % ---------------- Technical (not in Table 1) ----------------------
+    p.dt_sec  = 10;      % simulation time step [s] = 5*multiplier
+    p.seed    = 1;       % seed of the simulated controller population
+
+    % ---------------- Overrides (temporary changes of the defaults) ---
+    persistent overrides
+    if isempty(overrides)
+        overrides = struct();
+    end
+
+    if nargin >= 1 && (ischar(varargin{1}) || isstring(varargin{1}))
+        cmd = char(varargin{1});
+        switch cmd
+            case 'set'
+                if nargin ~= 3
+                    error('defaultErrorParams:BadCall', 'Use defaultErrorParams(''set'', name, value).');
+                end
+                name = char(varargin{2});
+                if ~isfield(p, name)
+                    error('defaultErrorParams:UnknownParameter', ...
+                          'Unknown parameter "%s". Valid names: %s', ...
+                          name, strjoin(fieldnames(p)', ', '));
+                end
+                overrides.(name) = varargin{3};
+                return;
+            case 'reset'
+                overrides = struct();
+                return;
+            case 'overrides'
+                varargout{1} = overrides;
+                return;
+        end
+    end
+
+    % apply active overrides to the defaults
+    ov_names = fieldnames(overrides);
+    for i = 1:numel(ov_names)
+        p.(ov_names{i}) = overrides.(ov_names{i});
+    end
+
+    % ---------------- Output logic ------------------------------------
+    if nargin == 0
+        varargout{1} = p;
+        return;
+    end
+
+    if nargin == 1 && isstruct(varargin{1})
+        % complete a (partial) user struct with the defaults
+        out = varargin{1};
+        names = fieldnames(p);
+        for i = 1:numel(names)
+            if ~isfield(out, names{i}) || isempty(out.(names{i}))
+                out.(names{i}) = p.(names{i});
+            end
+        end
+        varargout{1} = out;
+        return;
+    end
+
+    for i = 1:nargin
+        name = char(varargin{i});
+        if ~isfield(p, name)
+            error('defaultErrorParams:UnknownParameter', ...
+                  'Unknown parameter "%s". Valid names: %s', ...
+                  name, strjoin(fieldnames(p)', ', '));
+        end
+        varargout{i} = p.(name);
+    end
+end
