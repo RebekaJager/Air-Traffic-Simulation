@@ -27,8 +27,8 @@ function [D] = controlStates(D, C, varargin)
         pilot_error_rate = 0.5;
         wrongness = 20;
     elseif nargin == 4
-        pilot_error_rate = varargin{3};
-        wrongness = varargin{4};
+        pilot_error_rate = varargin{1};
+        wrongness = varargin{2};
     else
         error('Incorrect number of input arguments.')
     end
@@ -51,25 +51,33 @@ function [D] = controlStates(D, C, varargin)
     end
     
     idx_to_change = find(implementing_idx == 1);
-    human_error_nr = round(length(idx_to_change) * (pilot_error_rate / 100));
-    idx_to_change_w_error = idx_to_change(randperm(length(idx_to_change), human_error_nr));
+    if pilot_error_rate > 0 && ~isempty(idx_to_change)
+        human_error_nr = round(length(idx_to_change) * (pilot_error_rate / 100));
+        idx_to_change_w_error = idx_to_change(randperm(length(idx_to_change), human_error_nr));
+    else
+        idx_to_change_w_error = [];
+    end
     
     for k = 1 : length(idx_to_change)
         idx = idx_to_change(k);
         has_error = ismember(idx, idx_to_change_w_error);
-        error_mult = (1 + (wrongness / 100) * (2 * rand - 1));
+        if has_error
+            error_mult = (1 + (wrongness / 100) * (2 * rand - 1));
+        else
+            error_mult = 1;
+        end
         
         if isfield(C, 'heading_atc') && ~isempty(C(idx).heading_atc)
-            C(idx).heading = C(idx).heading_atc * (1 + (has_error * (error_mult - 1)));
+            C(idx).heading = mod(C(idx).heading_atc * error_mult, 360);
         end
         if isfield(C, 'flightlevel_atc') && ~isempty(C(idx).flightlevel_atc)
-            C(idx).flightlevel = C(idx).flightlevel_atc * (1 + (has_error * (error_mult - 1)));
+            C(idx).flightlevel = C(idx).flightlevel_atc * error_mult;
         end
         if isfield(C, 'velocity_atc') && ~isempty(C(idx).velocity_atc)
-            C(idx).velocity = C(idx).velocity_atc * (1 + (has_error * (error_mult - 1)));
+            C(idx).velocity = max(0, C(idx).velocity_atc * error_mult);
         end
         if isfield(C, 'vertical_rate_atc') && ~isempty(C(idx).vertical_rate_atc)
-            C(idx).vertical_rate = C(idx).vertical_rate_atc * (1 + (has_error * (error_mult - 1)));
+            C(idx).vertical_rate = C(idx).vertical_rate_atc * error_mult;
         end
     end
     
@@ -82,7 +90,6 @@ function [D] = controlStates(D, C, varargin)
     idx_C = Locb(Lia);
     
     if ~isempty(idx_D)
-  
         hdg_update = {C(idx_C).heading};
         fl_update = {C(idx_C).flightlevel};
         vel_update = {C(idx_C).velocity};
@@ -96,6 +103,5 @@ function [D] = controlStates(D, C, varargin)
         fl_array = [C(idx_C).flightlevel];
         alt_update = num2cell(fl_array * 100);
         [D(idx_D).altitude] = alt_update{:};
-
     end
 end
