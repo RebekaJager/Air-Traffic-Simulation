@@ -110,8 +110,8 @@ for i = 1 : n
     end
 end
 
-% Compute Flight Level
-FL = round((alt / 100) / 10) * 10;
+% Compute Flight Level (1 FL = 100 ft)
+FL = round(alt / 100);
 
 % Identify valid entries (where latitude was found and not 0)
 % Instead of looping backwards, we use logical indexing which is significantly faster.
