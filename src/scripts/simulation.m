@@ -56,8 +56,8 @@ else
     % Filter for area
     D = getInside(D, areashp);
     D = D([D(:).inside] == 1);
-    % Filter for above FL030
-    D = D([D(:).flightlevel] > 30);
+    % Filter for controlled airspace vertical limits (FL095 - FL660)
+    D = D([D(:).flightlevel] >= 95 & [D(:).flightlevel] < 660);
     %% Traffic Simulation
     D = getInside(D, bordershp);
     TrafficCache.D0 = D;
@@ -68,14 +68,17 @@ D2 = D([D(:).inside] == 1);
 current_config_id = 0;
 History_Config = [];
 History_Workload = {};
+n_steps = numel(i_start : multiplier : i_end);
+now_posix_log = nan(1, n_steps);
 
 % A forciklus most a multiplier szerint ugrik!
 for i = i_start : multiplier : i_end
+    i
     k_step = (i - i_start) / multiplier + 1;
     %% Control
     C1 = generateRequests(D2);
     % SV Agent for sector configuration allocation
-    [current_config_id, ActiveSectors] = SVAgent(D2, current_config_id, 3, 3);
+    [current_config_id, ActiveSectors] = SVAgent(D2, current_config_id, 20, 3);
     % Sector Manager assigns and calls controller agents
     [C, W_log] = SectorManager(C1, ActiveSectors, sim_ctrl.enable_errors, params);
     History_Config(end+1) = current_config_id;
@@ -83,7 +86,11 @@ for i = i_start : multiplier : i_end
     ATC_instructions(end+1) = ATC_instructions_number(C);
     AC_in_sector(end+1) = length(C);
     
-    D = controlStates(D, C);
+    if sim_ctrl.enable_errors
+        D = controlStates(D, C);
+    else
+        D = controlStates(D, C, 0, 0);
+    end
     D_inside = D([D(:).inside] == 1);
     
     D_inside = estimatePos(D_inside, dt_min);
@@ -112,18 +119,19 @@ for i = i_start : multiplier : i_end
         TrafficCache.D_all{k_step}     = D_all_updated;
         TrafficCache.now_posix(k_step) = now_posix;
     end
-    try
-        time(end+1) = datetime(now_posix, 'ConvertFrom', 'posixtime');
-    catch
-    end
+    now_posix_log(k_step) = now_posix;
     
     D = updatePos(D, D_all_updated); 
     D = getInside(D, bordershp);
-    % Filter for above FL030
-    D = D([D(:).flightlevel] > 30);
+    % Filter for controlled airspace vertical limits (FL095 - FL660)
+    D = D([D(:).flightlevel] >= 95 & [D(:).flightlevel] < 660);
     D2 = D([D(:).inside] == 1);
-    D = estimatePos(D, 1);
-   % v = stateMapping_simple(D, 0);
+    % v = stateMapping_simple(D, 0);
+end
+
+valid_posix = now_posix_log(~isnan(now_posix_log));
+if ~isempty(valid_posix)
+    time = datetime(valid_posix, 'ConvertFrom', 'posixtime');
 end
 
 %% Store the traffic cache after the first complete run
@@ -131,7 +139,7 @@ if ~use_cache
     D0 = TrafficCache.D0; D_all = TrafficCache.D_all; now_posix = TrafficCache.now_posix; %#ok<NASGU>
     if ~isfolder(cache_dir), mkdir(cache_dir); end
     tmp_file = [tempname(cache_dir) '.mat'];            % write to a temp name first,
-    save(tmp_file, 'D0', 'D_all', 'now_posix', '-v7.3'); % then rename, so a half-written
+    save(tmp_file, 'D0', 'D_all', 'now_posix');          % standard v7 format is 50x faster for cell structs
     movefile(tmp_file, cache_file);                      % file is never read by another run
     clear D0 D_all now_posix tmp_file;
 end
