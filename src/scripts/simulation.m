@@ -5,7 +5,7 @@ if ~exist('sim_ctrl', 'var'), clc; end   % no clc when started by sensitivity_an
 if ~exist('sim_ctrl', 'var'), sim_ctrl = struct(); end
 if ~isfield(sim_ctrl, 'enable_errors'), sim_ctrl.enable_errors = false; end  % false = error-free baseline run
 if isfield(sim_ctrl, 'rng_seed'), rng(sim_ctrl.rng_seed); end                % reproducible error draws
-clear calculateWorkload;   % reset the persistent workload memory of the previous run
+clear calculateWorkload SVAgent;   % reset persistent states of the previous run
 sep_min_infringements = [];
 ATC_instructions = [];
 AC_in_sector = [];
@@ -13,6 +13,7 @@ time = [];
 CMs = struct();
 t = 20;
 [lat, lon, d, bordershp, areashp] = areaCalc('HU', t);
+
 
 %% Set simulation resolution
 % multiplier = 1; -> 5 seconds (default)
@@ -77,7 +78,7 @@ for i = i_start : multiplier : i_end
     k_step = (i - i_start) / multiplier + 1;
     %% Control
     C1 = generateRequests(D2);
-    % SV Agent for sector configuration allocation
+    % SV Agent for sector configuration allocation (20-min look-ahead horizon on D2)
     [current_config_id, ActiveSectors] = SVAgent(D2, current_config_id, 20, 3);
     % Sector Manager assigns and calls controller agents
     [C, W_log] = SectorManager(C1, ActiveSectors, sim_ctrl.enable_errors, params);
