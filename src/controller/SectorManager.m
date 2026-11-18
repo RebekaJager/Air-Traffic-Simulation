@@ -83,8 +83,26 @@ function [C_out, WorkloadLog] = SectorManager(C_in, ActiveSectors, enable_errors
             WorkloadLog(end+1).SectorName = sector_name;
             WorkloadLog(end).Workload = W_smooth;
             
+            % Apply already-assigned *_atc instructions from upstream sectors before detection
+            D_sec_pred = D_sec;
+            for idx_p = 1:length(D_sec_pred)
+                if isfield(D_sec_pred, 'heading_atc') && ~isempty(D_sec_pred(idx_p).heading_atc)
+                    D_sec_pred(idx_p).heading = mod(D_sec_pred(idx_p).heading_atc, 360);
+                end
+                if isfield(D_sec_pred, 'flightlevel_atc') && ~isempty(D_sec_pred(idx_p).flightlevel_atc)
+                    D_sec_pred(idx_p).flightlevel = D_sec_pred(idx_p).flightlevel_atc;
+                    D_sec_pred(idx_p).altitude = D_sec_pred(idx_p).flightlevel_atc * 100;
+                end
+                if isfield(D_sec_pred, 'velocity_atc') && ~isempty(D_sec_pred(idx_p).velocity_atc)
+                    D_sec_pred(idx_p).velocity = D_sec_pred(idx_p).velocity_atc;
+                end
+                if isfield(D_sec_pred, 'vertical_rate_atc') && ~isempty(D_sec_pred(idx_p).vertical_rate_atc)
+                    D_sec_pred(idx_p).vertical_rate = D_sec_pred(idx_p).vertical_rate_atc;
+                end
+            end
+
             % detect and solve conflicts in sector
-            CM_sec = conflictDetect(D_sec, 3);
+            CM_sec = conflictDetect(D_sec_pred, 5);
             C_sec_solved = conflictSolve(CM_sec, D_sec);
             
             % apply error rate
