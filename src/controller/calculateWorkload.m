@@ -5,12 +5,14 @@ function [W_inst, W_smooth] = calculateWorkload(D_sec, sector_id, varargin)
 %
 %   Syntax
 %       [W_inst, W_smooth] = CALCULATEWORKLOAD(D_sec, sector_id)
+%       [W_inst, W_smooth] = CALCULATEWORKLOAD(D_sec, sector_id, params)
 %       [W_inst, W_smooth] = CALCULATEWORKLOAD(D_sec, sector_id, omegas)
 %       [W_inst, W_smooth] = CALCULATEWORKLOAD(D_sec, sector_id, omegas, lambda)
 %
 %   Input Arguments
 %      * D_sec as struct, the traffic currently inside the specific sector.
 %      * sector_id as string/char, unique identifier of the sector (e.g., 'LHCCW1').
+%      * params as struct (optional), model parameter struct from defaultErrorParams.
 %      * omegas as 1x4 double array (optional), weights for [N, V, C, H]. 
 %         Default is [1, 2, 4, 2].
 %      * lambda as double (optional), exponential smoothing factor. 
@@ -25,7 +27,18 @@ function [W_inst, W_smooth] = calculateWorkload(D_sec, sector_id, varargin)
     lambda = 0.7; % Default smoothing factor (adjustable)
     
     if nargin >= 3 && ~isempty(varargin{1})
-        omegas = varargin{1};
+        if isstruct(varargin{1})
+            p = defaultErrorParams(varargin{1});
+            omegas = [p.omega_1, p.omega_2, p.omega_3, p.omega_4];
+            if p.tau_mem > 0
+                dt_min = p.dt_sec / 60;
+                lambda = exp(-dt_min / p.tau_mem);
+            else
+                lambda = 0;
+            end
+        else
+            omegas = varargin{1};
+        end
     end
     if nargin >= 4 && ~isempty(varargin{2})
         lambda = varargin{2};
