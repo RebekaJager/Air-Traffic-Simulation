@@ -27,59 +27,108 @@ if size(CM, 1) ~= size(C, 1)
 end
 
 n = length(C);
+FL_MIN = 120;
+FL_MAX = 410;
+LOOKAHEAD_REQ = 10;
+LOOKAHEAD_SOLVE = 5;
+
+% Working copy updated incrementally so subsequent pairs see prior commands
+C_work = apply_existing_atc(C);
 
 % 1. PROCESS REQUESTS OUTSIDE THE CONFLICT PAIR LOOP
 % Prevents running conflictDetect O(n^3) times
 for i = 1 : n
-    if isfield(C, 'is_owned') && ~C(i).is_owned
+    if isfield(C_work, 'is_owned') && ~C_work(i).is_owned
         continue;
     end
     if isfield(C, 'heading_req') && ~isempty(C(i).heading_req)
-        C1 = C;
-        C1(i).heading = C1(i).heading_req;
-        CM1 = conflictDetect(C1, 10);
-        if sum(CM1(i, :)) == 0 || sum(CM1(i, :)) < sum(CM(i, :)) % Allow if no NEW conflicts are created
+        C1 = C_work;
+        C1(i).heading = mod(C(i).heading_req, 360);
+        CM1 = conflictDetect(C1, LOOKAHEAD_REQ);
+        if nnz(CM1(i, :) > 0) == 0
             C(i).ATC_approval = 1;
-            C(i).heading_atc = C(i).heading_req;
+            C(i).heading_atc = C1(i).heading;
+            C_work(i).heading = C1(i).heading;
+        else
+            C(i).ATC_approval = 0;
         end
     end
     if isfield(C, 'flightlevel_req') && ~isempty(C(i).flightlevel_req)
-        C1 = C;
-        C1(i).flightlevel = C1(i).flightlevel_req;
-        CM1 = conflictDetect(C1, 10);
-        if sum(CM1(i, :)) == 0 || sum(CM1(i, :)) < sum(CM(i, :))
-            C(i).ATC_approval = 1;
-            C(i).flightlevel_atc = C(i).flightlevel_req;
+        req_fl = C(i).flightlevel_req;
+        if req_fl >= FL_MIN && req_fl <= FL_MAX
+            C1 = C_work;
+            C1(i).flightlevel = req_fl;
+            C1(i).altitude = req_fl * 100;
+            CM1 = conflictDetect(C1, LOOKAHEAD_REQ);
+            if nnz(CM1(i, :) > 0) == 0
+                C(i).ATC_approval = 1;
+                C(i).flightlevel_atc = req_fl;
+                C_work(i).flightlevel = req_fl;
+                C_work(i).altitude = req_fl * 100;
+            else
+                C(i).ATC_approval = 0;
+            end
+        else
+            C(i).ATC_approval = 0;
         end
     end
-    if isfield(C, 'velocity_req') && ~isempty(C(i).velocity_req)
-        C1 = C;
-        C1(i).velocity = C1(i).velocity_req;
-        CM1 = conflictDetect(C1, 10);
-        if sum(CM1(i, :)) == 0 || sum(CM1(i, :)) < sum(CM(i, :))
+    if isfield(C, 'velocity_req') && ~isempty(C(i).velocity_req) && C(i).velocity_req > 0
+        C1 = C_work;
+        C1(i).velocity = C(i).velocity_req;
+        CM1 = conflictDetect(C1, LOOKAHEAD_REQ);
+        if nnz(CM1(i, :) > 0) == 0
             C(i).ATC_approval = 1;
             C(i).velocity_atc = C(i).velocity_req;
+            C_work(i).velocity = C(i).velocity_req;
+        else
+            C(i).ATC_approval = 0;
         end
     end
     if isfield(C, 'vertical_rate_req') && ~isempty(C(i).vertical_rate_req) 
-        C1 = C;
-        C1(i).vertical_rate = C1(i).vertical_rate_req;
-        CM1 = conflictDetect(C1, 10);
-        if sum(CM1(i, :)) == 0 || sum(CM1(i, :)) < sum(CM(i, :))
+        C1 = C_work;
+        C1(i).vertical_rate = C(i).vertical_rate_req;
+        CM1 = conflictDetect(C1, LOOKAHEAD_REQ);
+        if nnz(CM1(i, :) > 0) == 0
             C(i).ATC_approval = 1;
             C(i).vertical_rate_atc = C(i).vertical_rate_req;
+            C_work(i).vertical_rate = C(i).vertical_rate_req;
+        else
+            C(i).ATC_approval = 0;
         end
     end
 end
 
+% Clear request fields on C_work so Phase 2/3 only solve actual trajectory conflicts
+req_fields = {'flightlevel_req', 'heading_req', 'velocity_req', 'vertical_rate_req'};
+for rf = 1:length(req_fields)
+    if isfield(C_work, req_fields{rf})
+        [C_work.(req_fields{rf})] = deal([]);
+    end
+end
+
+% Re-evaluate conflict matrix after pilot request processing
+CM_base = conflictDetect(C_work, LOOKAHEAD_SOLVE);
+CM_curr = max(CM, CM_base);
+base_pair_conflicts = nnz(triu(CM_base, 1) > 0);
+
 % 2. SOLVE CONFLICTS (Using Upper Triangle to avoid double-processing)
 for i = 1 : n
     for j = i+1 : n
+        conf_type = max(CM_curr(i, j), CM_base(i, j));
+        if conf_type == 0 || conf_type == 3 || CM_base(i, j) == 0 || CM_base(i, j) == 3
+            continue;
+        end
         
-        if CM(i, j) == 1 % crossing conflict
-            
-            % Döntés a magasságváltásról (az alacsonyabb süllyed, a magasabb emelkedik)
-            if C(i).flightlevel < C(j).flightlevel
+        can_mod_i = ~isfield(C_work, 'is_owned') || C_work(i).is_owned;
+        can_mod_j = ~isfield(C_work, 'is_owned') || C_work(j).is_owned;
+        if ~can_mod_i && ~can_mod_j
+            continue;
+        end
+        
+        resolved = false;
+        
+        if conf_type == 1 % same level / crossing conflict
+            if C_work(i).flightlevel <= C_work(j).flightlevel
                 lower_idx = i;
                 higher_idx = j;
             else
@@ -87,75 +136,121 @@ for i = 1 : n
                 higher_idx = i;
             end
             
-            % check if descending lower aircraft creates new conflict (AND we own it)
-            if ~isfield(C, 'is_owned') || C(lower_idx).is_owned
-                C1 = C;
-                C1(lower_idx).flightlevel = C1(lower_idx).flightlevel - 20;
-                CM1 = conflictDetect(C1, 5);
-                if (sum(CM1(i, :)) < sum(CM(i, :))) && (sum(CM1(j, :)) < sum(CM(j, :)))
-                    C(lower_idx).flightlevel_atc = C1(lower_idx).flightlevel;
-                    continue
+            % Try descending the lower aircraft by 20 FL within RVSM bounds
+            can_mod_lower = ~isfield(C_work, 'is_owned') || C_work(lower_idx).is_owned;
+            new_fl_low = round(C_work(lower_idx).flightlevel / 10) * 10 - 20;
+            if can_mod_lower && new_fl_low >= FL_MIN
+                C1 = C_work;
+                C1(lower_idx).flightlevel = new_fl_low;
+                C1(lower_idx).altitude = new_fl_low * 100;
+                C1(lower_idx).vertical_rate = 0;
+                CM1 = conflictDetect(C1, LOOKAHEAD_SOLVE);
+                if CM1(i, j) == 0 && nnz(CM1(lower_idx, :) > 0) < nnz(CM_base(lower_idx, :) > 0) && ...
+                   nnz(triu(CM1, 1) > 0) < base_pair_conflicts
+                    C(lower_idx).flightlevel_atc = new_fl_low;
+                    C(lower_idx).vertical_rate_atc = 0;
+                    C_work = C1;
+                    CM_base = CM1;
+                    base_pair_conflicts = nnz(triu(CM_base, 1) > 0);
+                    resolved = true;
                 end
             end
             
-            % check if climbing higher aircraft creates new conflict (AND we own it)
-            if ~isfield(C, 'is_owned') || C(higher_idx).is_owned
-                C1 = C;
-                C1(higher_idx).flightlevel = C1(higher_idx).flightlevel + 20;
-                CM1 = conflictDetect(C1, 5);
-                if (sum(CM1(i, :)) < sum(CM(i, :))) && (sum(CM1(j, :)) < sum(CM(j, :)))
-                    C(higher_idx).flightlevel_atc = C1(higher_idx).flightlevel;
-                    continue
-                end
-            end
-            
-            % vectoring
-            [delta_deg, s] = min_heading_change_toward_faster(...
-                                            [C(i).latitude C(i).longitude], ...
-                                            [C(j).latitude C(j).longitude], ...
-                                             C(i).velocity, C(j).velocity, ...
-                                             C(i).heading, C(j).heading, ...
-                                             5*1852); % NM to meters conversion fixed!
-            if ~isnan(delta_deg)
-                % Ki fordulhat? (LoA szabály)
-                can_turn_1 = ~isfield(C, 'is_owned') || C(i).is_owned;
-                can_turn_2 = ~isfield(C, 'is_owned') || C(j).is_owned;
-                
-                % Felülbíráljuk a 'slow_id' döntést, ha az egyik gép idegen!
-                if can_turn_1 && ~can_turn_2
-                    s.slow_id = 1; 
-                elseif ~can_turn_1 && can_turn_2
-                    s.slow_id = 2;
-                end
-                
-                % Ha legalább az egyik a miénk, végrehajtjuk
-                if can_turn_1 || can_turn_2
-                    if s.slow_id == 1
-                        target_idx = i;
-                    else
-                        target_idx = j;
+            % Try climbing the higher aircraft by 20 FL within RVSM bounds
+            if ~resolved
+                can_mod_higher = ~isfield(C_work, 'is_owned') || C_work(higher_idx).is_owned;
+                new_fl_high = round(C_work(higher_idx).flightlevel / 10) * 10 + 20;
+                if can_mod_higher && new_fl_high <= FL_MAX
+                    C1 = C_work;
+                    C1(higher_idx).flightlevel = new_fl_high;
+                    C1(higher_idx).altitude = new_fl_high * 100;
+                    C1(higher_idx).vertical_rate = 0;
+                    CM1 = conflictDetect(C1, LOOKAHEAD_SOLVE);
+                    if CM1(i, j) == 0 && nnz(CM1(higher_idx, :) > 0) < nnz(CM_base(higher_idx, :) > 0) && ...
+                       nnz(triu(CM1, 1) > 0) < base_pair_conflicts
+                        C(higher_idx).flightlevel_atc = new_fl_high;
+                        C(higher_idx).vertical_rate_atc = 0;
+                        C_work = C1;
+                        CM_base = CM1;
+                        base_pair_conflicts = nnz(triu(CM_base, 1) > 0);
+                        resolved = true;
                     end
-                    C(target_idx).heading_atc = C(target_idx).heading + s.turn_direction_sign * delta_deg;
                 end
             end
             
-        elseif CM(i, j) == 2 % catching-up conflict
+        elseif conf_type == 2 % vertical motion conflict
             dec = choose_min_vs_change(...
-                C(i).latitude, C(i).longitude, ...
-                C(i).velocity, C(i).heading, ...
-                C(i).altitude, C(i).vertical_rate, ...
-                C(j).latitude, C(j).longitude, ...
-                C(j).velocity, C(j).heading, ...
-                C(j).altitude, C(j).vertical_rate);
+                C_work(i).latitude, C_work(i).longitude, ...
+                C_work(i).velocity, C_work(i).heading, ...
+                C_work(i).altitude, C_work(i).vertical_rate, ...
+                C_work(j).latitude, C_work(j).longitude, ...
+                C_work(j).velocity, C_work(j).heading, ...
+                C_work(j).altitude, C_work(j).vertical_rate, ...
+                can_mod_i, can_mod_j);
             
+            % Validate candidate VS change in sandbox (and try fallback aircraft if needed)
+            cand_order = [];
             if dec.which_aircraft == 1
-                if ~isfield(C, 'is_owned') || C(i).is_owned
-                    C(i).vertical_rate_atc = dec.new_vs1_fpm;
-                end
+                cand_order = [1, 2];
             elseif dec.which_aircraft == 2
-                if ~isfield(C, 'is_owned') || C(j).is_owned
-                    C(j).vertical_rate_atc = dec.new_vs2_fpm;
+                cand_order = [2, 1];
+            end
+            
+            for c_opt = cand_order
+                if c_opt == 1 && can_mod_i && isfinite(dec.cand_vs1_fpm)
+                    target_idx = i;
+                    new_vs = dec.cand_vs1_fpm;
+                elseif c_opt == 2 && can_mod_j && isfinite(dec.cand_vs2_fpm)
+                    target_idx = j;
+                    new_vs = dec.cand_vs2_fpm;
+                else
+                    continue;
                 end
+                
+                C1 = C_work;
+                C1(target_idx).vertical_rate = new_vs;
+                CM1 = conflictDetect(C1, LOOKAHEAD_SOLVE);
+                if CM1(i, j) == 0 && nnz(CM1(target_idx, :) > 0) <= nnz(CM_base(target_idx, :) > 0) && ...
+                   nnz(triu(CM1, 1) > 0) < base_pair_conflicts
+                    C(target_idx).vertical_rate_atc = new_vs;
+                    C_work = C1;
+                    CM_base = CM1;
+                    base_pair_conflicts = nnz(triu(CM_base, 1) > 0);
+                    resolved = true;
+                    break;
+                end
+            end
+        end
+        
+        % 3. HORIZONTAL VECTORING (Primary for Type 1 if FL change blocked, fallback for Type 2)
+        if ~resolved
+            [target_idx, new_hdg] = resolve_horizontal_vectoring(C_work, i, j, can_mod_i, can_mod_j, LOOKAHEAD_SOLVE);
+            if target_idx > 0
+                C(target_idx).heading_atc = new_hdg;
+                C_work(target_idx).heading = new_hdg;
+                CM_base = conflictDetect(C_work, LOOKAHEAD_SOLVE);
+                base_pair_conflicts = nnz(triu(CM_base, 1) > 0);
+            end
+        end
+    end
+end
+
+% 4. LEVEL-OFF AIRCRAFT THAT HAVE COMPLETED CONFLICT AVOIDANCE AT AN RVSM LEVEL
+CM_final = conflictDetect(C_work, LOOKAHEAD_SOLVE);
+for i = 1 : n
+    can_mod_i = ~isfield(C_work, 'is_owned') || C_work(i).is_owned;
+    if can_mod_i && nnz(CM_final(i, :) > 0) == 0 && abs(C_work(i).vertical_rate) > 50
+        nearest_rvsm_ft = round(C_work(i).altitude / 1000) * 1000;
+        if abs(C_work(i).altitude - nearest_rvsm_ft) <= 100
+            C1 = C_work;
+            C1(i).vertical_rate = 0;
+            C1(i).altitude = nearest_rvsm_ft;
+            C1(i).flightlevel = nearest_rvsm_ft / 100;
+            CM1 = conflictDetect(C1, LOOKAHEAD_SOLVE);
+            if nnz(CM1(i, :) > 0) == 0
+                C(i).vertical_rate_atc = 0;
+                C_work = C1;
+                CM_final = CM1;
             end
         end
     end
@@ -164,39 +259,134 @@ end
 
 
 %%
-function [delta_deg, details] = min_heading_change_toward_faster(p1_latlon, p2_latlon, v1, v2, hdg1_deg, hdg2_deg, Dmin_m)
-if v1 <= v2
-    slow = struct('latlon',p1_latlon,'v',v1,'hdg_deg',hdg1_deg,'id',1);
-    fast = struct('latlon',p2_latlon,'v',v2,'hdg_deg',hdg2_deg,'id',2);
-else
-    slow = struct('latlon',p2_latlon,'v',v2,'hdg_deg',hdg2_deg,'id',2);
-    fast = struct('latlon',p1_latlon,'v',v1,'hdg_deg',hdg1_deg,'id',1);
+function C_work = apply_existing_atc(C)
+% Apply already assigned *_atc commands to a working state copy.
+    C_work = C;
+    for k = 1 : length(C_work)
+        if isfield(C_work, 'heading_atc') && ~isempty(C_work(k).heading_atc)
+            C_work(k).heading = mod(C_work(k).heading_atc, 360);
+        end
+        if isfield(C_work, 'flightlevel_atc') && ~isempty(C_work(k).flightlevel_atc)
+            C_work(k).flightlevel = C_work(k).flightlevel_atc;
+            C_work(k).altitude = C_work(k).flightlevel_atc * 100;
+        end
+        if isfield(C_work, 'velocity_atc') && ~isempty(C_work(k).velocity_atc)
+            C_work(k).velocity = C_work(k).velocity_atc;
+        end
+        if isfield(C_work, 'vertical_rate_atc') && ~isempty(C_work(k).vertical_rate_atc)
+            C_work(k).vertical_rate = C_work(k).vertical_rate_atc;
+        end
+    end
 end
 
-lat0 = mean([slow.latlon(1), fast.latlon(1)]) * pi/180;
+
+%%
+function [target_idx, new_hdg] = resolve_horizontal_vectoring(C_work, i, j, can_mod_i, can_mod_j, lookahead_min)
+% Find minimal conflict-free heading change (left or right, up to 90 deg)
+% on an owned aircraft to achieve >= 5 NM separation at CPA (or diverge if already < 5 NM).
+    target_idx = 0;
+    new_hdg = NaN;
+    Dmin_m = 5 * 1852;
+    
+    % Prefer maneuvering the slower owned aircraft first
+    if C_work(i).velocity <= C_work(j).velocity
+        order = [i, j];
+        can_mod = [can_mod_i, can_mod_j];
+    else
+        order = [j, i];
+        can_mod = [can_mod_j, can_mod_i];
+    end
+    
+    CM_base = conflictDetect(C_work, lookahead_min);
+    base_conflicts = nnz(triu(CM_base, 1) > 0);
+    
+    lat0 = deg2rad((C_work(i).latitude + C_work(j).latitude) / 2);
+    m_per_deg_lat = 111320;
+    m_per_deg_lon = 111320 * cos(lat0);
+    
+    for idx_pos = 1:2
+        if ~can_mod(idx_pos)
+            continue;
+        end
+        ac_m = order(idx_pos);
+        ac_o = order(3 - idx_pos);
+        
+        p_m = [C_work(ac_m).longitude * m_per_deg_lon, C_work(ac_m).latitude * m_per_deg_lat];
+        p_o = [C_work(ac_o).longitude * m_per_deg_lon, C_work(ac_o).latitude * m_per_deg_lat];
+        r_mo = p_o - p_m;
+        
+        % If already inside 5 NM horizontally, steer directly away from intruder (max 90 deg)
+        if norm(r_mo) < Dmin_m
+            away_hdg = rad2deg(atan2(-r_mo(1), -r_mo(2)));
+            ang_diff = mod(away_hdg - C_work(ac_m).heading + 180, 360) - 180;
+            cand_delta = max(-90, min(90, ang_diff));
+            if abs(cand_delta) < 5
+                cand_delta = 30;
+            end
+            cand_hdg = mod(C_work(ac_m).heading + cand_delta, 360);
+            C1 = C_work;
+            C1(ac_m).heading = cand_hdg;
+            CM1 = conflictDetect(C1, lookahead_min);
+            if nnz(triu(CM1, 1) > 0) <= base_conflicts
+                target_idx = ac_m;
+                new_hdg = cand_hdg;
+                return;
+            end
+            continue;
+        end
+        
+        % Search both left (-1) and right (+1) turns for minimal angle securing 5 NM
+        best_delta = Inf;
+        best_hdg = NaN;
+        for turn_sign = [-1, 1]
+            [delta_deg, ~] = min_heading_change_one_side(...
+                [C_work(ac_m).latitude, C_work(ac_m).longitude], ...
+                [C_work(ac_o).latitude, C_work(ac_o).longitude], ...
+                C_work(ac_m).velocity, C_work(ac_o).velocity, ...
+                C_work(ac_m).heading, C_work(ac_o).heading, ...
+                Dmin_m, turn_sign);
+            
+            if ~isnan(delta_deg) && delta_deg <= 90 && delta_deg < best_delta
+                cand_hdg = mod(C_work(ac_m).heading + turn_sign * delta_deg, 360);
+                C1 = C_work;
+                C1(ac_m).heading = cand_hdg;
+                CM1 = conflictDetect(C1, lookahead_min);
+                if CM1(i, j) == 0 && nnz(CM1(ac_m, :) > 0) < nnz(CM_base(ac_m, :) > 0) && ...
+                   nnz(triu(CM1, 1) > 0) < base_conflicts
+                    best_delta = delta_deg;
+                    best_hdg = cand_hdg;
+                end
+            end
+        end
+        
+        if isfinite(best_delta)
+            target_idx = ac_m;
+            new_hdg = best_hdg;
+            return;
+        end
+    end
+end
+
+
+%%
+function [delta_deg, details] = min_heading_change_one_side(p_man_latlon, p_oth_latlon, v_man, v_oth, hdg_man_deg, hdg_oth_deg, Dmin_m, turn_dir)
+lat0 = mean([p_man_latlon(1), p_oth_latlon(1)]) * pi/180;
 [m_per_deg_lat, m_per_deg_lon] = meters_per_degree(lat0);
-p_slow = latlon_to_xy(slow.latlon, lat0, m_per_deg_lat, m_per_deg_lon);
-p_fast = latlon_to_xy(fast.latlon, lat0, m_per_deg_lat, m_per_deg_lon);
+p_m = latlon_to_xy(p_man_latlon, lat0, m_per_deg_lat, m_per_deg_lon);
+p_o = latlon_to_xy(p_oth_latlon, lat0, m_per_deg_lat, m_per_deg_lon);
 
-hdg_s = deg2rad(slow.hdg_deg);
-hdg_f = deg2rad(fast.hdg_deg);
-u_f   = [sin(hdg_f), cos(hdg_f)];
+hdg_m = deg2rad(hdg_man_deg);
+hdg_o = deg2rad(hdg_oth_deg);
+u_o   = [sin(hdg_o), cos(hdg_o)];
 
-r0    = p_fast - p_slow;
-v_f   = fast.v * u_f;
-
-bearing_sf = atan2(r0(1), r0(2));
-angdiff = wrapToPi(bearing_sf - hdg_s);
-turn_dir = sign(angdiff);
-if turn_dir == 0
-    turn_dir = 1;
-end
+r0    = p_o - p_m;
+v_o   = v_oth * u_o;
 
     function [d_cpa, t_cpa] = miss_distance_for_delta(delta)
-        hdg_s_new = hdg_s + turn_dir*delta;
-        u_s = [sin(hdg_s_new), cos(hdg_s_new)];
-        v_s = slow.v * u_s;
-        v_rel = v_f - v_s;
+        hdg_m_new = hdg_m + turn_dir * delta;
+        u_m = [sin(hdg_m_new), cos(hdg_m_new)];
+        v_m = v_man * u_m;
+        v_rel = v_o - v_m;
         v2norm = dot(v_rel, v_rel);
         if v2norm < 1e-12
             t_cpa = 0;
@@ -213,19 +403,30 @@ end
 [d0, t0] = miss_distance_for_delta(0);
 if d0 >= Dmin_m
     delta_deg = 0;
-    details = pack_details(delta_deg, slow, fast, r0, v_f, d0, t0, turn_dir, lat0, Dmin_m);
+    details = struct('delta_deg', delta_deg, 'initial_miss_distance_m', d0, 'initial_t_cpa_s', t0);
     return
 end
 
-delta_lo = 0;
-delta_hi = deg2rad(180);
-[dhi, ~] = miss_distance_for_delta(delta_hi);
-if dhi < Dmin_m
+% Sample [0, 90] deg to find the first crossing above Dmin_m (miss distance is not always monotonic)
+grid_rad = linspace(0, deg2rad(90), 37);
+found_bracket = false;
+for g = 2:length(grid_rad)
+    [dg, ~] = miss_distance_for_delta(grid_rad(g));
+    if dg >= Dmin_m
+        delta_lo = grid_rad(g-1);
+        delta_hi = grid_rad(g);
+        found_bracket = true;
+        break;
+    end
+end
+
+if ~found_bracket
     delta_deg = NaN;
-    details = pack_details(delta_deg, slow, fast, r0, v_f, d0, t0, turn_dir, lat0, Dmin_m);
+    details = struct('delta_deg', delta_deg, 'initial_miss_distance_m', d0, 'initial_t_cpa_s', t0);
     return
 end
-for k = 1:60
+
+for k = 1:30
     mid = 0.5*(delta_lo + delta_hi);
     [dm, ~] = miss_distance_for_delta(mid);
     if dm >= Dmin_m
@@ -234,13 +435,11 @@ for k = 1:60
         delta_lo = mid;
     end
 end
-delta_rad = delta_hi;
-delta_deg = rad2deg(delta_rad);
-
-details = pack_details(delta_deg, slow, fast, r0, v_f, d0, t0, turn_dir, lat0, Dmin_m);
+delta_deg = rad2deg(delta_hi);
+details = struct('delta_deg', delta_deg, 'initial_miss_distance_m', d0, 'initial_t_cpa_s', t0);
 end
 
-function xy = latlon_to_xy(latlon, lat0, m_per_deg_lat, m_per_deg_lon)
+function xy = latlon_to_xy(latlon, ~, m_per_deg_lat, m_per_deg_lon)
     lat = latlon(1)*pi/180;
     lon = latlon(2)*pi/180;
     xy = [ lon*m_per_deg_lon, lat*m_per_deg_lat ];
@@ -249,23 +448,6 @@ end
 function [m_per_deg_lat, m_per_deg_lon] = meters_per_degree(lat0)
     m_per_deg_lat = 111320;
     m_per_deg_lon = 111320 * cos(lat0);
-end
-
-function a = wrapToPi(a)
-    a = mod(a + pi, 2*pi) - pi;
-end
-
-function s = pack_details(delta_deg, slow, fast, r0, v_f, d0, t0, turn_dir, lat0, Dmin_m)
-    s = struct();
-    s.delta_deg = delta_deg;
-    s.slow_id = slow.id;
-    s.fast_id = fast.id;
-    s.turn_direction_sign = turn_dir;
-    s.initial_miss_distance_m = d0;
-    s.initial_t_cpa_s = t0;
-    s.lat0_rad = lat0;
-    s.Dmin_m = Dmin_m;
-    s.note = 'delta_deg NaN -> unable to secure Dmin with rotation constraint toward faster aircraft.';
 end
 
 
@@ -357,7 +539,12 @@ end
 %%
 function decision = choose_min_vs_change( ...
     lat1,lon1,s1,hdg1,alt1,vs1_fpm, ...
-    lat2,lon2,s2,hdg2,alt2,vs2_fpm)
+    lat2,lon2,s2,hdg2,alt2,vs2_fpm, ...
+    can_mod_1, can_mod_2)
+
+if nargin < 13, can_mod_1 = true; end
+if nargin < 14, can_mod_2 = true; end
+MAX_VS_FPM = 3000;
 
 % 1) Calculate the forbidden band if ONLY aircraft 1's vertical speed can change
 r12 = allowed_vertical_speed(lat1,lon1,s1,hdg1,alt1,vs1_fpm, ...
@@ -366,6 +553,9 @@ r12 = allowed_vertical_speed(lat1,lon1,s1,hdg1,alt1,vs1_fpm, ...
 % 2) Calculate the forbidden band if ONLY aircraft 2's vertical speed can change
 r21 = allowed_vertical_speed(lat2,lon2,s2,hdg2,alt2,vs2_fpm, ...
                              lat1,lon1,s1,hdg1,alt1,vs1_fpm);
+
+decision.cand_vs1_fpm = NaN;
+decision.cand_vs2_fpm = NaN;
 
 % If horizontally OK at CA, no action needed
 if r12.horizontal_OK || r21.horizontal_OK
@@ -378,81 +568,80 @@ if r12.horizontal_OK || r21.horizontal_OK
     return;
 end
 
-% Helper function: minimum jump out of the forbidden band
+% Helper function: minimum jump out of the forbidden band within [-MAX_VS_FPM, MAX_VS_FPM]
     function [delta, new_vs] = minimal_jump(current_vs, band)
         L = band(1); U = band(2);
         if isfinite(L) && isfinite(U) && L <= U
             if current_vs > L && current_vs < U
-                % We are inside -> jump to the closest boundary
-                dL = L - current_vs;
-                dU = U - current_vs;
-                if abs(dL) <= abs(dU)
-                    delta = dL; new_vs = L;
+                cand_L = L - 50; % 50 fpm safety margin outside boundary
+                cand_U = U + 50;
+                ok_L = (abs(cand_L) <= MAX_VS_FPM);
+                ok_U = (abs(cand_U) <= MAX_VS_FPM);
+                if ok_L && ok_U
+                    if abs(cand_L - current_vs) <= abs(cand_U - current_vs)
+                        new_vs = cand_L;
+                    else
+                        new_vs = cand_U;
+                    end
+                    delta = new_vs - current_vs;
+                elseif ok_L
+                    new_vs = cand_L; delta = new_vs - current_vs;
+                elseif ok_U
+                    new_vs = cand_U; delta = new_vs - current_vs;
                 else
-                    delta = dU; new_vs = U;
+                    delta = NaN; new_vs = NaN;
                 end
             else
-                % Already outside -> no change needed
                 delta = 0; new_vs = current_vs;
             end
         elseif isinf(L) && isinf(U) && L < U
-            % (-Inf, Inf): no restriction -> no change needed
             delta = 0; new_vs = current_vs;
-        elseif isinf(L) && isinf(U) && L > U
-            % Empty set (impossible situation, e.g., tCA=0 and |dz0|<1000)
-            delta = NaN; new_vs = NaN;
         else
-            % Semi-infinite bands
-            if isfinite(L) && current_vs < L
-                delta = 0; new_vs = current_vs;
-            elseif isfinite(U) && current_vs > U
-                delta = 0; new_vs = current_vs;
-            else
-                % Inside a semi-infinite forbidden part -> jump to boundary
-                if isfinite(L) && ~isfinite(U)
-                    delta = L - current_vs; new_vs = L;
-                elseif isfinite(U) && ~isfinite(L)
-                    delta = U - current_vs; new_vs = U;
-                else
-                    delta = 0; new_vs = current_vs;
-                end
-            end
+            delta = NaN; new_vs = NaN;
         end
     end
 
-% 3) Option A: only change vs1 (vs2 fixed)
-[delta1, vs1_new] = minimal_jump(vs1_fpm, r12.allowed_vs1_fpm_range);
+% 3) Option A: only change vs1 (if owned)
+if can_mod_1
+    [delta1, vs1_new] = minimal_jump(vs1_fpm, r12.allowed_vs1_fpm_range);
+else
+    delta1 = NaN; vs1_new = NaN;
+end
 
-% 4) Option B: only change vs2 (vs1 fixed)
-[delta2, vs2_new] = minimal_jump(vs2_fpm, r21.allowed_vs1_fpm_range); 
+% 4) Option B: only change vs2 (if owned)
+if can_mod_2
+    [delta2, vs2_new] = minimal_jump(vs2_fpm, r21.allowed_vs1_fpm_range);
+else
+    delta2 = NaN; vs2_new = NaN;
+end
 
-% 5) Decision & results
+decision.cand_vs1_fpm = vs1_new;
+decision.cand_vs2_fpm = vs2_new;
 decision.tCA_s   = r12.tCA_s;
 decision.dH_CA_m = r12.dH_CA_m;
 decision.notes.r12 = r12.note;
 decision.notes.r21 = r21.note;
 
-% Detect impossible situation
+% Detect impossible situation (e.g. tCA=0 or exceeds MAX_VS_FPM)
 if (isnan(delta1) && isnan(delta2))
     decision.which_aircraft = -1; 
     decision.delta_fpm = NaN;
     decision.new_vs1_fpm = NaN;
     decision.new_vs2_fpm = NaN;
-    decision.reason = 'Closest approach is essentially now and |dz0|<1000 ft -> no time to build vertical separation by VS change.';
+    decision.reason = 'No feasible VS solution within physical limits -> fallback to vectoring.';
     return;
 end
 
-% If both are 0, no action needed (already outside the forbidden band)
-if (delta1==0) && (delta2==0)
+if (delta1 == 0) || (delta2 == 0)
     decision.which_aircraft = 0;
     decision.delta_fpm = 0;
     decision.new_vs1_fpm = vs1_fpm;
     decision.new_vs2_fpm = vs2_fpm;
-    decision.reason = 'Both vertical speeds already yield >=1000 ft at CA.';
+    decision.reason = 'Vertical speeds already yield >=1000 ft at CA.';
     return;
 end
 
-% Choose the smaller absolute change (tie: prefer aircraft 1)
+% Choose the smaller absolute change among owned aircraft
 if (isnan(delta2)) || (~isnan(delta1) && abs(delta1) <= abs(delta2))
     decision.which_aircraft = 1;
     decision.delta_fpm = delta1;
