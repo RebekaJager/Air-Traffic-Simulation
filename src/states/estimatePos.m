@@ -1,5 +1,4 @@
 function D = estimatePos(D, t)
-%
 % ESTIMATEPOS - Return the predicted future position of aircraft.
 %
 %   Syntax
@@ -31,7 +30,7 @@ function D = estimatePos(D, t)
     lat_mov = lats + cos(hdg_rad) .* dist_deg;
     
     alt_mov = alts + vrrs .* t;
-    fl_mov  = floor(alt_mov ./ 1000) .* 10;
+    fl_mov  = round(alt_mov ./ 100);
     
     lon_c = num2cell(lon_mov); [D.longitude_mov] = lon_c{:};
     lat_c = num2cell(lat_mov); [D.latitude_mov]  = lat_c{:};
