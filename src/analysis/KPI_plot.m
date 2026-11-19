@@ -1,108 +1,107 @@
-%% Edit filenames or load manually
-scriptDir = fileparts(mfilename('fullpath'));
-dataPath = fullfile(scriptDir, '..', 'data', 'AC_in_sector_2.mat');
-Aircarft_in_sector = load(fullfile('data', 'AC_in_sector.mat')).AC_in_sector;
+%% KPI_plot.m - Visualization directly from MATLAB Workspace variables
+% Requires the following variables in Workspace after running simulation.m:
+%   AC_in_sector, sep_min_infringements, ATC_instructions
+% Optional in Workspace:
+%   time, dt_sec, CMs
 
-dataPath = fullfile(scriptDir, '..', 'data', 'ATC_instructions_2.mat');
-ATC_instructions = load(fullfile('data', 'ATC_instructions.mat')).ATC_instructions;
-
-dataPath = fullfile(scriptDir, '..', 'data', 'sep_min_infringements_2.mat');
-Separation_Minima_Infringments = load(fullfile('data', 'sep_min_infringements.mat')).sep_min_infringements;
-%% Edit filenames or load manually
-scriptDir = fileparts(mfilename('fullpath'));
-dataPath = fullfile(scriptDir, '..', 'results', '20250825_AC_in_sector.mat');
-Aircarft_in_sector = load(fullfile('results', '20250825_AC_in_sector.mat')).AC_in_sector;
-
-dataPath = fullfile(scriptDir, '..', 'results', '20250825_ATC_instructions.mat');
-ATC_instructions = load(fullfile('results', '20250825_ATC_instructions.mat')).ATC_instructions;
-
-dataPath = fullfile(scriptDir, '..', 'results', '20250825_sep_min.mat');
-Separation_Minima_Infringments = load(fullfile('results', '20250825_sep_min.mat')).sep_min_infringements;
-%% time labels for from : to format
-t1 = datetime('06:56:34','InputFormat','HH:mm:ss');
-t2 = datetime('14:06:34','InputFormat','HH:mm:ss');
-step = seconds(5);
-times = t1:step:t2;
-timeStrings = string(datestr(times,'HH:MM:SS'));
-outText = strjoin(timeStrings, '\t');
-
-Time = string(strsplit(outText, '\t'));
-%% time labels for nr of points format
-t0 = datetime('06:56:34','InputFormat','HH:mm:ss');
-times = t0 + seconds(0:5:(7000-1)*5); % set nr of points here
-timeStrings = string(datestr(times,'HH:MM:SS'));
-Time = strjoin(timeStrings, sprintf('\t'));
-Time = string(strsplit(Time, '\t'));
-%%
-Aircarft_in_sector = AC_in_sector;
-Separation_Minima_Infringments = sep_min_infringements;
-x = 1:length(Time); 
-
-figure;
-yyaxis left
-area(x, Aircarft_in_sector, 'FaceAlpha', 0.5, 'DisplayName', 'Aircarft in sector (left axis)', 'EdgeColor','none');
-ylabel('Aircraft in sector');
-ylim([0, max(Aircarft_in_sector)*1.1])
-
-yyaxis right
-hold on
-area(x, Separation_Minima_Infringments, 'FaceAlpha', 0.5, 'DisplayName', 'Separation Minima Infringments (right axis)', 'FaceColor', [0.9290, 0.6940, 0.1250], 'EdgeColor','none');
-area(x, ATC_instructions, 'FaceAlpha', 0.5, 'DisplayName', 'ATC instructions (right axis)', 'EdgeColor','none');
-
-ylabel('ATC instructions and Separation Minima Infringments');
-ylim([0, max([ATC_instructions Separation_Minima_Infringments])*1.1])
-
-customLabels = repmat("", size(Time));
-customLabels(1:100:end) = Time(1:100:end);
-customLabels = Time(1:200:end);  
-tickIndices = 1:200:length(Time);
-
-xticks(tickIndices);
-xticklabels(customLabels);
-xtickangle(45);
-xlabel('Time');
-xlim([1, length(Time)])
-legend show;
-legend('Location', 'northwest');
-% set(gca, 'FontName', 'Palatino Linotype')
-grid on;
-box off;
-
-%%
-
-nSteps = numel(CMs);
-conflictTypes = [1, 2, 3];
-counts = zeros(nSteps, numel(conflictTypes));
-
-for t = 1:nSteps
-    M = CMs(t).conflicts; 
-    M(logical(eye(size(M)))) = 0;
-    
-    for k = 1:numel(conflictTypes)
-        counts(t,k) = sum(M(:) == conflictTypes(k));
+required_vars = {'AC_in_sector', 'sep_min_infringements', 'ATC_instructions'};
+for v = 1:numel(required_vars)
+    if ~exist(required_vars{v}, 'var')
+        error('Variable "%s" not found in the Workspace! Please run simulation.m first.', required_vars{v});
     end
 end
 
-time = (0:nSteps-1) * 5;
+Aircraft_in_sector = AC_in_sector(:)';
+Separation_Minima_Infringements = sep_min_infringements(:)';
+ATC_instructions_vec = ATC_instructions(:)';
 
-figure;
-plot(time, counts, 'LineWidth', 2);
-legend({'1 - same level, crossing',...
-        '2 - level crossing (vert motion)',...
-        '3 - level crossing (not vert motion)'}, ...
-        'Location','best');
-customLabels = repmat("", size(Time));
-customLabels(1:100:end) = Time(1:100:end);
-customLabels = Time(1:200:end);  
-tickIndices = 1:200:length(Time);
+nSteps = length(Aircraft_in_sector);
+x = 1:nSteps;
 
+% Build time axis labels from Workspace 'time' (or fallback to simulation start 13:53:15 UTC)
+if exist('time', 'var') && ~isempty(time) && length(time) == nSteps
+    Time = string(datestr(time, 'HH:MM:SS'));
+else
+    if exist('dt_sec', 'var') && ~isempty(dt_sec)
+        step_sec = dt_sec;
+    else
+        step_sec = 10;
+    end
+    t0 = datetime('13:53:15', 'InputFormat', 'HH:mm:ss');
+    times = t0 + seconds(0:step_sec:(nSteps - 1) * step_sec);
+    Time = string(datestr(times, 'HH:MM:SS'));
+end
+
+%% 1. Main KPI Plot: Traffic Volume, Separation Infringements & ATC Instructions
+figure('Name', 'Simulation KPIs', 'Color', 'w', 'Position', [100, 100, 1200, 550]);
+
+yyaxis left
+area(x, Aircraft_in_sector, 'FaceAlpha', 0.45, ...
+    'DisplayName', 'Aircraft in sector (left axis)', 'EdgeColor', 'none');
+ylabel('Aircraft in sector', 'FontWeight', 'bold');
+ylim([0, max([Aircraft_in_sector, 1]) * 1.1]);
+
+yyaxis right
+hold on
+area(x, ATC_instructions_vec, 'FaceAlpha', 0.45, ...
+    'DisplayName', 'ATC instructions (right axis)', 'EdgeColor', 'none');
+area(x, Separation_Minima_Infringements, 'FaceAlpha', 0.65, ...
+    'DisplayName', 'Separation Minima Infringements (right axis)', ...
+    'FaceColor', [0.9290, 0.6940, 0.1250], 'EdgeColor', 'none');
+hold off
+
+ylabel('ATC instructions & Separation Minima Infringements', 'FontWeight', 'bold');
+ylim([0, max([ATC_instructions_vec, Separation_Minima_Infringements, 1]) * 1.15]);
+
+tick_step = max(1, round(nSteps / 10));
+tickIndices = 1:tick_step:nSteps;
 xticks(tickIndices);
-xticklabels(customLabels);
+xticklabels(Time(tickIndices));
 xtickangle(45);
-xlabel('Time');
-xlim([1, length(Time)])
-ylim([1,8.5])
-ylabel('Number of conflicts');
-%title('Conflict evolution over time');
+xlabel('Time (UTC)', 'FontWeight', 'bold');
+xlim([1, nSteps]);
+title('Traffic Volume, ATC Instructions, and Separation Minima Infringements', 'FontSize', 13);
 legend('Location', 'northwest');
 grid on;
+box off;
+
+%% Print summary metrics to Command Window
+fprintf('\n--- KPI Summary (%d steps) ---\n', nSteps);
+fprintf('Average aircraft in airspace:         %.2f AC\n', mean(Aircraft_in_sector));
+fprintf('Total ATC instructions issued:        %d (avg: %.2f / step)\n', sum(ATC_instructions_vec), mean(ATC_instructions_vec));
+fprintf('Aircraft-steps in infringement:       %d (avg: %.2f AC / step, peak: %d AC)\n', ...
+    sum(Separation_Minima_Infringements), mean(Separation_Minima_Infringements), max(Separation_Minima_Infringements));
+fprintf('Share of infringement-free steps:     %.1f%%\n\n', 100 * mean(Separation_Minima_Infringements == 0));
+
+%% 2. Optional Conflict-Type Breakdown (only if CMs was populated)
+if exist('CMs', 'var') && isstruct(CMs) && isfield(CMs, 'conflicts') && ~isempty(CMs)
+    nCM = numel(CMs);
+    conflictTypes = [1, 2, 3];
+    counts = zeros(nCM, numel(conflictTypes));
+
+    for t_idx = 1:nCM
+        M = CMs(t_idx).conflicts;
+        if isempty(M)
+            continue;
+        end
+        M(logical(eye(size(M)))) = 0;
+        for k = 1:numel(conflictTypes)
+            counts(t_idx, k) = sum(M(:) == conflictTypes(k)) / 2; % symmetric matrix -> pairs
+        end
+    end
+
+    figure('Name', 'Conflict Evolution by Type', 'Color', 'w', 'Position', [150, 150, 1200, 500]);
+    plot(1:nCM, counts, 'LineWidth', 1.8);
+    legend({'1 - Same level, crossing', ...
+            '2 - Level crossing (vertical motion)', ...
+            '3 - Level crossing (pilot request)'}, ...
+            'Location', 'northwest');
+    xticks(tickIndices(tickIndices <= nCM));
+    xticklabels(Time(tickIndices(tickIndices <= nCM)));
+    xtickangle(45);
+    xlabel('Time (UTC)', 'FontWeight', 'bold');
+    xlim([1, nCM]);
+    ylabel('Number of conflict pairs', 'FontWeight', 'bold');
+    title('Conflict Evolution by Typology', 'FontSize', 13);
+    grid on;
+end
