@@ -213,7 +213,7 @@ function sa_task(sa_t, sa_cfg)
         defaultErrorParams('set', 'seed', sa_t.seed);        % controller population
         sim_ctrl = struct('enable_errors', true, 'rng_seed', sa_t.seed);
     else
-        sim_ctrl = struct('enable_errors', false);
+        sim_ctrl = struct('enable_errors', false, 'rng_seed', 0);
     end
     sa_info = struct('tag', sa_t.tag, 'parameter', sa_t.parameter, 'rep', sa_t.rep, ...
                      'overrides', {sa_ov});
