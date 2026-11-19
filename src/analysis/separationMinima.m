@@ -23,10 +23,10 @@ n = 0;
 switch nargin
     case 1
         horizontal = 5;
-        vertical = 10; % 10 FL = 1000 ft
+        vertical_ft = 1000;
     case 3
-        horizontal = varargin{2};
-        vertical = varargin{3}/100;
+        horizontal = varargin{1};
+        vertical_ft = varargin{2};
     otherwise
         error('Incorrect number of input arguments.')
 end
@@ -39,7 +39,11 @@ end
 % Pre-calculate arrays for fast vector operations
 lat_rad = deg2rad([D.latitude]);
 lon_rad = deg2rad([D.longitude]);
-fl = [D.flightlevel];
+if isfield(D, 'altitude')
+    alt = [D.altitude];
+else
+    alt = [D.flightlevel] * 100;
+end
 
 % Fast equirectangular projection
 R = 6371000;
@@ -53,10 +57,10 @@ conflict_flags = false(1, num_ac);
 for i = 1 : num_ac
     for j = i+1 : num_ac
         % A conflict requires BOTH vertical AND horizontal separation loss simultaneously
-        if abs(fl(i) - fl(j)) < vertical
+        if abs(alt(i) - alt(j)) < vertical_ft
             d_meters = sqrt((X(i) - X(j))^2 + (Y(i) - Y(j))^2);
             d_nm = d_meters / 1852;
-            
+
             if d_nm < horizontal
                 conflict_flags(i) = true;
                 conflict_flags(j) = true;
