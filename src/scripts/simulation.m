@@ -1,4 +1,4 @@
-clearvars -except sim_ctrl sa_*;   % keep the settings of sensitivity_analysis.m
+      clearvars -except sim_ctrl sa_*;   % keep the settings of sensitivity_analysis.m
 if ~exist('sim_ctrl', 'var'), clc; end   % no clc when started by sensitivity_analysis.m (keeps its progress log)
 
 %% Simulation control (set by sensitivity_analysis.m; defaults for standalone runs)
@@ -64,6 +64,7 @@ else
     TrafficCache.D0 = D;
 end
 % Filter for aircraft inside the area
+D = assignExitTargets(D, bordershp);
 D2 = D([D(:).inside] == 1);
 %%
 current_config_id = 0;
@@ -71,8 +72,8 @@ History_Config = [];
 History_Workload = {};
 n_steps = numel(i_start : multiplier : i_end);
 now_posix_log = nan(1, n_steps);
+%t_now_posix = NaN;  History_Fallback = [];  History_MaxSec = [];
 
-% A forciklus most a multiplier szerint ugrik!
 for i = i_start : multiplier : i_end
     i
     k_step = (i - i_start) / multiplier + 1;
@@ -80,18 +81,14 @@ for i = i_start : multiplier : i_end
     C1 = generateRequests(D2);
     % SV Agent for sector configuration allocation (20-min look-ahead horizon on D2)
     [current_config_id, ActiveSectors] = SVAgent(D2, current_config_id, 20, 3);
+
     % Sector Manager assigns and calls controller agents
     [C, W_log] = SectorManager(C1, ActiveSectors, sim_ctrl.enable_errors, params);
     History_Config(end+1) = current_config_id;
     History_Workload{end+1} = W_log;
     ATC_instructions(end+1) = ATC_instructions_number(C);
     AC_in_sector(end+1) = length(C);
-    
-    if sim_ctrl.enable_errors
-        D = controlStates(D, C);
-    else
-        D = controlStates(D, C, 0, 0);
-    end
+    D = controlStates(D, C, 0, 0, dt_sec);
     D_inside = D([D(:).inside] == 1);
     
     D_inside = estimatePos(D_inside, dt_min);
@@ -121,11 +118,13 @@ for i = i_start : multiplier : i_end
         TrafficCache.now_posix(k_step) = now_posix;
     end
     now_posix_log(k_step) = now_posix;
+    %t_now_posix = now_posix;
     
     D = updatePos(D, D_all_updated); 
     D = getInside(D, bordershp);
     % Filter for controlled airspace vertical limits (FL095 - FL660)
     D = D([D(:).flightlevel] >= 95 & [D(:).flightlevel] < 660);
+    D = assignExitTargets(D, bordershp);
     D2 = D([D(:).inside] == 1);
     % v = stateMapping_simple(D, 0);
 end
