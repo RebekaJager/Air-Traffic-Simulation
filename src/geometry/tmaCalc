@@ -1,0 +1,118 @@
+function Vol = tmaCalc()
+% TMACALC - Airspace volumes that lie INSIDE the Budapest FIR but are NOT
+%   part of the Budapest ACC (BUDAPEST CTA): Budapest TMA, military TMAs
+%   (MTMA) and military CTRs (MCTR).
+%
+%   Source: AIP Hungary ENR 2.1, sections 1 (BUDAPEST TMA PARTS) and 2
+%   (MILITARY TMAS AND CTRS). Check the coordinates against the current
+%   AIRAC cycle before relying on them.
+%
+%   Syntax
+%       Vol = TMACALC()
+%
+%   Output Arguments
+%      * Vol as struct array, one element per airspace volume, fields:
+%          Name     volume name
+%          Shape    polyshape, x = longitude [deg], y = latitude [deg]
+%          LowerFL  lower limit [FL]  (ft ALT / 100, GND = 0)
+%          UpperFL  upper limit [FL]
+%
+%   Notes
+%      * Limits given in FT ALT are converted with FL = ft / 100, i.e. the
+%        difference between QNH altitude and pressure altitude is ignored.
+%      * Where the AIP draws an edge "along border HUNGARY_SLOVAKREPUBLIC"
+%        the edge is replaced by a fictitious vertex outside Hungary
+%        (written as [lat lon] in the ring strings below). All aircraft
+%        are anyway limited to Hungary by getInside(D, bordershp), so this
+%        only avoids slivers between the straight chord and the real border.
+%      * Use FILTERACC to remove aircraft inside these volumes.
+
+% name | lateral limits | lower FL | upper FL
+T = {
+    % ---- BUDAPEST TMA (approach control, class C) ----
+    'BUDAPEST TMA1', '472011N 0181744E - 470220N 0182212E - 465337N 0190031E - 465726N 0185421E - 470324N 0184445E - 472011N 0181744E', 95, 195;
+    'BUDAPEST TMA2/A', '474419N 0181530E - 472900N 0181531E - 472421N 0181642E - 472232N 0181709E - 472011N 0181744E - 470324N 0184445E - 471342N 0185839E - 471844N 0185029E - 472115N 0184623E - 472409N 0184140E - 472531N 0183928E - 473231N 0183928E - 473653N 0183928E - 474919N 0185613E - 474914N 0190432E - 474907N 0191518E - 473849N 0193152E - 473835N 0193214E - 474906N 0194628E - 475644N 0193408E - 480519N 0192017E - [48.6 18.9] - 474419N 0181530E', 55, 195;
+    'BUDAPEST TMA2/B', '471342N 0185839E - 470324N 0184445E - 465726N 0185421E - 465337N 0190031E - 464819N 0192349E - 465248N 0195136E - 470913N 0201353E - 471529N 0201355E - 473200N 0201358E - 474052N 0195940E - 474906N 0194628E - 473835N 0193214E - 471927N 0200302E - 465441N 0192934E - 470345N 0191451E - 471342N 0185839E', 55, 195;
+    'BUDAPEST TMA3', '474919N 0185613E - 473653N 0183928E - 473231N 0183928E - 472531N 0183928E - 472409N 0184140E - 472115N 0184623E - 471844N 0185029E - 471342N 0185839E - 471956N 0190704E - 472418N 0190115E - 472525N 0185940E - 472811N 0190029E - 472933N 0190054E - 473057N 0185951E - 473355N 0185502E - 473556N 0185145E - 474111N 0185850E - 473827N 0190316E - 473721N 0190503E - 473640N 0190610E - 473600N 0191030E - 473439N 0192008E - 473221N 0192350E - 473835N 0193214E - 473849N 0193152E - 474907N 0191518E - 474914N 0190432E - 474919N 0185613E', 35, 195;
+    'BUDAPEST TMA4', '474111N 0185850E - 473556N 0185145E - 473355N 0185502E - 473057N 0185951E - 473721N 0190503E - 473827N 0190316E - 474111N 0185850E', 25, 195;
+    'BUDAPEST TMA5', '473721N 0190503E - 473057N 0185951E - 472933N 0190054E - 472811N 0190029E - 472525N 0185940E - 472418N 0190115E - 471956N 0190704E - 470955N 0192319E - 472218N 0194000E - 473221N 0192350E - 473439N 0192008E - 473600N 0191030E - 473640N 0190610E - 473721N 0190503E', 20, 195;
+    'BUDAPEST TMA6', '473835N 0193214E - 473221N 0192350E - 472218N 0194000E - 470955N 0192319E - 471956N 0190704E - 471342N 0185839E - 470345N 0191451E - 465441N 0192934E - 471927N 0200302E - 473835N 0193214E', 25, 195;
+    'BUDAPEST TMA7', '481029N 0200325E - [48.5 19.8] - 480519N 0192017E - 475644N 0193408E - 474906N 0194628E - 474052N 0195940E - 473200N 0201358E - 480605N 0201359E - 481029N 0200325E', 95, 195;
+    % ---- MILITARY TMAs ----
+    'KECSKEMET MTMA1/A', '470247N 0200102E - 470304N 0195208E - 470342N 0192954E - 470403N 0191630E - 464938N 0192954E - 463622N 0201429E - 465142N 0202812E - 465400N 0201703E - 465559N 0200728E - 465843N 0200133E - 470247N 0200102E', 20, 75;
+    'KECSKEMET MTMA1/B', '470247N 0200102E - 470304N 0195208E - 470342N 0192954E - 470403N 0191630E - 464938N 0192954E - 463622N 0201429E - 465142N 0202812E - 465400N 0201703E - 465559N 0200728E - 465843N 0200133E - 470247N 0200102E', 75, 125;
+    'KECSKEMET MTMA2/A', '464938N 0192954E - 463957N 0192213E - 463615N 0195058E - 463203N 0202335E - 464943N 0203740E - 465142N 0202812E - 463622N 0201429E - 464938N 0192954E', 40, 75;
+    'KECSKEMET MTMA2/B', '464938N 0192954E - 463957N 0192213E - 463615N 0195058E - 463203N 0202335E - 464943N 0203740E - 465142N 0202812E - 463622N 0201429E - 464938N 0192954E', 75, 125;
+    'KECSKEMET MTMA3/A', '470403N 0191630E - 470104N 0191155E - 465337N 0190031E - 463957N 0192213E - 464938N 0192954E - 470403N 0191630E', 40, 75;
+    'KECSKEMET MTMA3/B', '470403N 0191630E - 470104N 0191155E - 465337N 0190031E - 463957N 0192213E - 464938N 0192954E - 470403N 0191630E', 75, 125;
+    'KECSKEMET MTMA4/A', '470929N 0194549E - 470403N 0191630E - 470342N 0192954E - 470304N 0195208E - 470247N 0200102E - 470929N 0194549E', 20, 75;
+    'KECSKEMET MTMA4/B', '470929N 0194549E - 470403N 0191630E - 470342N 0192954E - 470304N 0195208E - 470247N 0200102E - 470929N 0194549E', 75, 125;
+    'PAPA MTMA', '473559N 0171554E - 473559N 0173554E - 472959N 0174154E - 472959N 0175015E - 471259N 0175900E - 465959N 0172640E - 470229N 0171654E - 472854N 0170304E - 473559N 0171554E', 20, 95;
+    'SZOLNOK MTMA/A', '472212N 0200910E - 471203N 0195953E - 470247N 0200102E - 465843N 0200133E - 465559N 0200728E - 465400N 0201703E - 465142N 0202812E - 464943N 0203740E - 471245N 0204529E - 471829N 0202929E - 472038N 0201743E - 472212N 0200910E', 20, 55;
+    'SZOLNOK MTMA/B', '472212N 0200910E - 471203N 0195953E - 470247N 0200102E - 465843N 0200133E - 465559N 0200728E - 465400N 0201703E - 465142N 0202812E - 464943N 0203740E - 471245N 0204529E - 471829N 0202929E - 472038N 0201743E - 472212N 0200910E', 55, 95;
+    % ---- MILITARY CTRs (polygon part) ----
+    'KECSKEMET MCTR', '470342N 0192954E - 470304N 0195208E - 465559N 0200729E - 464529N 0195854E - 465329N 0193659E - 465329N 0192954E - 470342N 0192954E', 0, 40;
+    'PAPA MCTR', '473539N 0172854E - 471029N 0174254E - 470738N 0173124E - 473259N 0171754E - 473539N 0172854E', 0, 40;
+    'SZOLNOK MCTR', '472038N 0201743E - 465843N 0200133E - 465559N 0200728E - 465400N 0201703E - 471829N 0202929E - 472038N 0201743E', 0, 40;
+    };
+
+% Circular parts: name | centre | radius [km] | lower FL | upper FL
+C = {
+    'KECSKEMET MCTR (circle)', '465504N 0194503E', 10, 0, 40;
+    'PAPA MCTR (circle)', '472150N 0173002E', 10, 0, 40;
+    };
+
+Vol = struct('Name', {}, 'Shape', {}, 'LowerFL', {}, 'UpperFL', {});
+
+% polyshape repairs the ring orientation itself, no warning needed
+ws = warning('off', 'MATLAB:polyshape:repairedBySimplify');
+cleanupObj = onCleanup(@() warning(ws));
+
+for k = 1:size(T, 1)
+    [lat, lon] = parseRing(T{k, 2});
+    Vol(end+1) = struct('Name', T{k, 1}, 'Shape', polyshape(lon, lat), ...
+                        'LowerFL', T{k, 3}, 'UpperFL', T{k, 4}); %#ok<AGROW>
+end
+
+az = linspace(0, 360, 73);
+az(end) = [];
+for k = 1:size(C, 1)
+    [lat0, lon0] = parsePoint(C{k, 2});
+    [lat, lon] = reckon(lat0, lon0, km2deg(C{k, 3}), az);   % same call style as areaCalc
+    Vol(end+1) = struct('Name', C{k, 1}, 'Shape', polyshape(lon, lat), ...
+                        'LowerFL', C{k, 4}, 'UpperFL', C{k, 5}); %#ok<AGROW>
+end
+end
+
+function [lat, lon] = parseRing(s)
+% PARSERING - 'DDMMSSN DDDMMSSE - DDMMSSN DDDMMSSE - [lat lon] - ...' to vectors.
+tok = strtrim(strsplit(s, ' - '));
+n = numel(tok);
+lat = zeros(n, 1);
+lon = zeros(n, 1);
+for i = 1:n
+    if startsWith(tok{i}, '[')
+        v = sscanf(tok{i}, '[%f %f]');      % fictitious vertex, decimal degrees
+        lat(i) = v(1);
+        lon(i) = v(2);
+    else
+        [lat(i), lon(i)] = parsePoint(tok{i});
+    end
+end
+% drop the closing vertex (equal to the first one)
+if n > 1 && lat(end) == lat(1) && lon(end) == lon(1)
+    lat(end) = [];
+    lon(end) = [];
+end
+end
+
+function [lat, lon] = parsePoint(s)
+% PARSEPOINT - 'DDMMSSN DDDMMSSE' (AIP format) to decimal degrees.
+t = regexp(strtrim(s), '^(\d{2})(\d{2})(\d{2}(?:\.\d+)?)N\s+(\d{3})(\d{2})(\d{2}(?:\.\d+)?)E$', 'tokens', 'once');
+if isempty(t)
+    error('tmaCalc:badCoordinate', 'Cannot parse coordinate "%s".', s);
+end
+v = str2double(t);
+lat = v(1) + v(2) / 60 + v(3) / 3600;
+lon = v(4) + v(5) / 60 + v(6) / 3600;
+end
